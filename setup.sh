@@ -6,6 +6,7 @@ pip install -e .
 
 echo "Installing llm tool..."
 pip install llm
+llm install llm-gemini llm-claude
 
 echo ""
 echo "Installing system dependencies..."

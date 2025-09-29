@@ -10,14 +10,6 @@ AI-powered alt text generation and labeling tools for markdown content. Original
 pip install git+https://github.com/alexander-turner/alt-text-llm.git
 ```
 
-### For development
-
-```bash
-git clone https://github.com/alexander-turner/alt-text-llm.git
-cd alt-text-llm
-pip install -e ".[dev]"
-```
-
 ### Automated setup (includes system dependencies)
 
 ```bash
@@ -78,7 +70,7 @@ alt-text-llm generate \
 
 **Available options:**
 
-- `--model` (required) - LLM model to use (e.g., `gemini-2.5-flash`, `gemini-2.5-pro`)
+- `--model` (required) - LLM model to use (e.g., `gemini-2.5-flash`, `gpt-4o-mini`, `claude-3-5-sonnet`)
 - `--max-chars` - Maximum characters for alt text (default: 300)
 - `--timeout` - LLM timeout in seconds (default: 120)
 - `--estimate-only` - Only show cost estimate without generating
@@ -105,12 +97,14 @@ alt-text-llm label \
 
 **Interactive commands:**
 
+# TODO make vi an option
+
 - Edit the suggested alt text (vim keybindings enabled)
 - Press Enter to accept the suggestion as-is
-- Type `undo` or `u` to go back to the previous item
+- Submit `undo` or `u` to go back to the previous item
 - Images display in your terminal (requires `imgcat`)
 
-## Complete workflow example
+## Example workflow
 
 ```bash
 # 1. Scan markdown files for missing alt text
@@ -133,19 +127,31 @@ alt-text-llm label
 
 ## Configuration
 
-### Setting up LLM
+### LLM Integration
 
-The `generate` command requires the `llm` tool to be configured with API keys:
+This tool uses the [`llm` CLI tool](https://llm.datasette.io/) to generate alt text. This provides access to many different AI models including:
+
+- **Gemini** (Google) via the [llm-gemini plugin](https://github.com/simonw/llm-gemini)
+- **Claude** (Anthropic) via the [llm-claude-3 plugin](https://github.com/tomviner/llm-claude-3)
+- And [many more via plugins](https://llm.datasette.io/en/stable/plugins/directory.html)
+
+### Setting up your model
+
+**For Gemini models (default):**
 
 ```bash
-# For Gemini models
-llm keys set gemini
-# Enter your API key when prompted
-
+llm install llm-gemini
+llm keys set gemini # enter API key
 llm -m gemini-2.5-flash "Hello, world!"
 ```
 
-See the [llm documentation](https://llm.datasette.io/) for more details on configuration and available models.
+**For other models:**
+
+1. Install the appropriate llm plugin (e.g., `llm install llm-openai`)
+2. Configure your API key (e.g., `llm keys set openai`)
+3. Use the model name with `--model` flag (e.g., `--model gpt-4o-mini`)
+
+See the [llm documentation](https://llm.datasette.io/en/stable/setup.html) for setup instructions and the [plugin directory](https://llm.datasette.io/en/stable/plugins/directory.html) for available models.
 
 ## Output files
 
