@@ -97,8 +97,6 @@ alt-text-llm label \
 
 **Interactive commands:**
 
-# TODO make vi an option
-
 - Edit the suggested alt text (vim keybindings enabled)
 - Press Enter to accept the suggestion as-is
 - Submit `undo` or `u` to go back to the previous item

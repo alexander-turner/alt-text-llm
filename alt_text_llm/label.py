@@ -71,8 +71,9 @@ class LabelingSession:
 class DisplayManager:
     """Handles rich console display operations."""
 
-    def __init__(self, console: Console) -> None:
+    def __init__(self, console: Console, vi_mode: bool = False) -> None:
         self.console = console
+        self.vi_mode = vi_mode
 
     def show_context(self, queue_item: "scan.QueueItem") -> None:
         """Display context information for the queue item."""
@@ -119,8 +120,9 @@ class DisplayManager:
         if current is not None and total is not None:
             self.show_progress(current, total)
 
-        # Enable vim keybindings for readline
-        readline.parse_and_bind("set editing-mode vi")
+        # Enable vim keybindings for readline if requested
+        if self.vi_mode:
+            readline.parse_and_bind("set editing-mode vi")
         readline.set_startup_hook(lambda: readline.insert_text(suggestion))
         self.console.print(
             "\n[bold blue]Edit alt text (or press Enter to accept, 'undo' to go back):[/bold blue]"
@@ -276,6 +278,7 @@ def label_suggestions(
     console: Console,
     output_path: Path,
     append_mode: bool,
+    vi_mode: bool = False,
 ) -> int:
     """Load suggestions and allow user to label them, collecting results."""
     console.print(
@@ -289,7 +292,7 @@ def label_suggestions(
     )
 
     session = LabelingSession(suggestions_to_process)
-    display = DisplayManager(console)
+    display = DisplayManager(console, vi_mode=vi_mode)
 
     try:
         _process_labeling_loop(session, display, console)
@@ -309,6 +312,7 @@ def label_from_suggestions_file(
     suggestions_file: Path,
     output_path: Path,
     skip_existing: bool = False,
+    vi_mode: bool = False,
 ) -> None:
     """Load suggestions from file and start labeling process."""
     console = Console()
@@ -334,7 +338,7 @@ def label_from_suggestions_file(
     )
 
     processed_count = label_suggestions(
-        suggestions, console, output_path, skip_existing
+        suggestions, console, output_path, skip_existing, vi_mode
     )
 
     # Write final results

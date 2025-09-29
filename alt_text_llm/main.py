@@ -100,7 +100,7 @@ def _generate_command(args: argparse.Namespace) -> None:
 def _label_command(args: argparse.Namespace) -> None:
     """Execute the label sub-command."""
     label.label_from_suggestions_file(
-        args.suggestions_file, args.output, args.skip_existing
+        args.suggestions_file, args.output, args.skip_existing, args.vi_mode
     )
 
 
@@ -206,6 +206,12 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         default=True,
         help="Skip captions already present in output file",
+    )
+    label_parser.add_argument(
+        "--vi-mode",
+        action="store_true",
+        default=False,
+        help="Enable vi keybindings for text editing (default: disabled)",
     )
 
     return parser.parse_args()
