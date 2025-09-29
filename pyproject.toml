@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alt-text-llm"
+version = "0.1.0"
+description = "AI-powered alt text generation and labeling tools for markdown content"
+readme = "README.md"
+authors = [{name = "TurnTrout"}]
+license = {text = "MIT"}
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing :: Markup :: Markdown",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+keywords = ["alt-text", "accessibility", "markdown", "llm", "ai"]
+
+dependencies = [
+    "gitpython>=3.1.44",
+    "requests>=2.32.5",
+    "ruamel.yaml>=0.18.0",
+    "markdown-it-py>=4.0.0",
+    "rich>=14.1.0",
+    "tqdm>=4.67.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-cov>=5.0.0",
+    "mypy>=1.0.0",
+    "types-requests",
+]
+
+[project.scripts]
+alt-text-llm = "alt_text_llm.main:main"
+
+[project.urls]
+Homepage = "https://github.com/alexander-turner/alt-text-llm"
+Repository = "https://github.com/alexander-turner/alt-text-llm"
+Issues = "https://github.com/alexander-turner/alt-text-llm/issues"
+
+[tool.setuptools.packages.find]
+include = ["alt_text_llm*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
