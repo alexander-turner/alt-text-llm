@@ -1,14 +1,54 @@
 # alt-text-llm
 
-AI-powered alt text generation and labeling tools for markdown content.
+AI-powered alt text generation and labeling tools for markdown content. Originally developed for [my website](https://turntrout.com/design) ([repo](https://github.com/alexander-turner/TurnTrout.com)).
 
 ## Installation
 
+### Quick install from GitHub
+
 ```bash
-cd ~/Downloads
+pip install git+https://github.com/alexander-turner/alt-text-llm.git
+```
+
+### For development
+
+```bash
 git clone https://github.com/alexander-turner/alt-text-llm.git
 cd alt-text-llm
-sh ./setup.sh
+pip install -e ".[dev]"
+```
+
+### Automated setup (includes system dependencies)
+
+```bash
+git clone https://github.com/alexander-turner/alt-text-llm.git
+cd alt-text-llm
+./setup.sh
+```
+
+## Prerequisites
+
+The following command-line tools must be installed:
+
+- **`llm`** - LLM interface ([install instructions](https://llm.datasette.io/))
+- **`git`** - Version control
+- **`magick`** (ImageMagick) - Image processing
+- **`ffmpeg`** - Video processing
+- **`imgcat`** - Terminal image display
+
+**macOS:**
+
+```bash
+brew install imagemagick ffmpeg imgcat
+pip install llm
+```
+
+**Linux:**
+
+```bash
+sudo apt-get install imagemagick ffmpeg
+pip install llm
+# imgcat: curl -sL https://iterm2.com/utilities/imgcat -o ~/.local/bin/imgcat && chmod +x ~/.local/bin/imgcat
 ```
 
 ## Usage
@@ -20,7 +60,7 @@ The tool provides three main commands: `scan`, `generate`, and `label`.
 Scan your markdown files to find images without meaningful alt text:
 
 ```bash
-python -m alt_text_llm.main scan --root /path/to/markdown/files
+alt-text-llm scan --root /path/to/markdown/files
 ```
 
 This creates `asset_queue.json` with all assets needing alt text.
@@ -30,7 +70,7 @@ This creates `asset_queue.json` with all assets needing alt text.
 Generate alt text suggestions using an LLM:
 
 ```bash
-python -m alt_text_llm.main generate \
+alt-text-llm generate \
   --root /path/to/markdown/files \
   --model gemini-2.5-flash \
   --suggestions-file suggested_alts.json
@@ -47,7 +87,7 @@ python -m alt_text_llm.main generate \
 **Cost estimation:**
 
 ```bash
-python -m alt_text_llm.main generate \
+alt-text-llm generate \
   --root /path/to/markdown/files \
   --model gemini-2.5-flash \
   --estimate-only
@@ -58,7 +98,7 @@ python -m alt_text_llm.main generate \
 Interactively review and approve the AI-generated suggestions:
 
 ```bash
-python -m alt_text_llm.main label \
+alt-text-llm label \
   --suggestions-file suggested_alts.json \
   --output asset_captions.json
 ```
@@ -74,21 +114,21 @@ python -m alt_text_llm.main label \
 
 ```bash
 # 1. Scan markdown files for missing alt text
-python -m alt_text_llm.main scan --root ./content
+alt-text-llm scan --root ./content
 
 # 2. Estimate the cost
-python -m alt_text_llm.main generate \
+alt-text-llm generate \
   --root ./content \
   --model gemini-2.5-flash \
   --estimate-only
 
 # 3. Generate suggestions (if cost is acceptable)
-python -m alt_text_llm.main generate \
+alt-text-llm generate \
   --root ./content \
   --model gemini-2.5-flash
 
 # 4. Review and approve suggestions
-python -m alt_text_llm.main label
+alt-text-llm label
 ```
 
 ## Configuration
@@ -102,7 +142,6 @@ The `generate` command requires the `llm` tool to be configured with API keys:
 llm keys set gemini
 # Enter your API key when prompted
 
-# Test it works
 llm -m gemini-2.5-flash "Hello, world!"
 ```
 
@@ -113,16 +152,3 @@ See the [llm documentation](https://llm.datasette.io/) for more details on confi
 - `asset_queue.json` - Queue of assets needing alt text (from `scan`)
 - `suggested_alts.json` - AI-generated suggestions (from `generate`)
 - `asset_captions.json` - Approved final captions (from `label`)
-
-## Requirements
-
-- Python 3.11+
-- External executables: `git`, `llm`, `magick`, `ffmpeg`, `imgcat`
-
-## License
-
-MIT
-
-## Author
-
-Alexander Turner (TurnTrout)
