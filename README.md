@@ -4,10 +4,10 @@ AI-powered alt text generation and labeling tools for markdown content. Original
 
 ## Installation
 
-### Quick install from GitHub
+### From PyPI
 
 ```bash
-pip install git+https://github.com/alexander-turner/alt-text-llm.git
+pip install alt-text-llm
 ```
 
 ### Automated setup (includes system dependencies)

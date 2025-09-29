@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alt-text-llm"
-version = "0.1.0"
+version = "0.1.1"
 description = "AI-powered alt text generation and labeling tools for markdown content"
 readme = "README.md"
 authors = [{name = "TurnTrout"}]
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.11"
 keywords = ["alt-text", "accessibility", "markdown", "llm", "ai"]
 
