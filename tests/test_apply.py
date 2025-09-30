@@ -259,3 +259,109 @@ Second image: ![alt2](image2.png)
     new_content = md_path.read_text()
     assert "![new caption 1](image1.png)" in new_content
     assert "![new caption 2](image2.png)" in new_content
+
+
+def test_apply_wikilink_image_alt_with_existing_alt() -> None:
+    """Test applying alt text to wikilink image syntax with existing alt."""
+    line = "This is ![[path/to/image.png|old alt]] in text"
+    new_line, old_alt = apply._apply_wikilink_image_alt(
+        line, "path/to/image.png", "new alt text"
+    )
+
+    assert old_alt == "old alt"
+    assert new_line == "This is ![[path/to/image.png|new alt text]] in text"
+
+
+def test_apply_wikilink_image_alt_no_alt() -> None:
+    """Test applying alt text to wikilink image syntax without alt."""
+    line = "This is ![[path/to/image.png]] in text"
+    new_line, old_alt = apply._apply_wikilink_image_alt(
+        line, "path/to/image.png", "new alt text"
+    )
+
+    assert old_alt is None
+    assert new_line == "This is ![[path/to/image.png|new alt text]] in text"
+
+
+def test_apply_wikilink_image_alt_url() -> None:
+    """Test applying alt text to wikilink with full URL."""
+    line = "![[https://assets.turntrout.com/static/images/posts/distillation-robustifies-unlearning-20250612141417.avif]]"
+    new_line, old_alt = apply._apply_wikilink_image_alt(
+        line,
+        "https://assets.turntrout.com/static/images/posts/distillation-robustifies-unlearning-20250612141417.avif",
+        "new alt text",
+    )
+
+    assert old_alt is None
+    assert (
+        new_line
+        == "![[https://assets.turntrout.com/static/images/posts/distillation-robustifies-unlearning-20250612141417.avif|new alt text]]"
+    )
+
+
+def test_apply_wikilink_image_alt_no_match() -> None:
+    """Test wikilink function returns unchanged line when no match."""
+    line = "This is ![markdown](image.png) not wikilink"
+    new_line, old_alt = apply._apply_wikilink_image_alt(
+        line, "image.png", "new alt text"
+    )
+
+    assert old_alt is None
+    assert new_line == line
+
+
+@pytest.fixture
+def wikilink_file_with_image(temp_dir: Path) -> Path:
+    """Create a test markdown file with a wikilink image."""
+    md_path = temp_dir / "test.md"
+    content = """# Test File
+
+This is a test ![[image.png|old alt]] image.
+
+Another paragraph.
+"""
+    md_path.write_text(content)
+    return md_path
+
+
+def test_apply_caption_to_file_wikilink(
+    wikilink_file_with_image: Path, console: Console
+) -> None:
+    """Test applying caption to wikilink image in markdown file."""
+    caption_item = utils.AltGenerationResult(
+        markdown_file=str(wikilink_file_with_image),
+        asset_path="image.png",
+        suggested_alt="suggested",
+        model="test-model",
+        context_snippet="context",
+        line_number=3,
+        final_alt="new caption",
+    )
+
+    result = apply._apply_caption_to_file(
+        md_path=wikilink_file_with_image,
+        caption_item=caption_item,
+        console=console,
+        dry_run=False,
+    )
+
+    assert result is not None
+    old_alt, new_alt = result
+    assert old_alt == "old alt"
+    assert new_alt == "new caption"
+
+    # Verify file was updated
+    new_content = wikilink_file_with_image.read_text()
+    assert "![[image.png|new caption]]" in new_content
+    assert "![[image.png|old alt]]" not in new_content
+
+
+def test_apply_wikilink_image_alt_special_chars() -> None:
+    """Test wikilink with special regex characters in path."""
+    line = "Image: ![[path/to/image (1).png]] here"
+    new_line, old_alt = apply._apply_wikilink_image_alt(
+        line, "path/to/image (1).png", "new alt"
+    )
+
+    assert old_alt is None
+    assert new_line == "Image: ![[path/to/image (1).png|new alt]] here"

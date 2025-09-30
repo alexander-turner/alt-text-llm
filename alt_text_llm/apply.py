@@ -57,15 +57,16 @@ def _apply_html_image_alt(
     escaped_path = re.escape(asset_path)
 
     # Match img tag with this src (handles both > and /> endings)
-    img_pattern = rf'<img\s+([^>]*src="{escaped_path}"[^>]*)/?>'
+    # Capture group 1: attributes, Group 2: closing (either "/" or "")
+    img_pattern = rf'<img\s+([^>]*src="{escaped_path}"[^/>]*?)\s*(/?)>'
 
     match = re.search(img_pattern, line, re.IGNORECASE | re.DOTALL)
     if not match:
         return line, None
 
-    img_attrs = match.group(1)
+    img_attrs = match.group(1).rstrip()  # Remove trailing whitespace
     old_alt: str | None = None
-    is_self_closing = match.group(0).endswith("/>")
+    closing_slash = match.group(2)  # Either "/" or ""
 
     # Check if alt attribute exists
     alt_pattern = r'alt="([^"]*)"'
@@ -92,10 +93,38 @@ def _apply_html_image_alt(
         )
 
     # Reconstruct the img tag with proper closing
-    closing = "/>" if is_self_closing else ">"
-    old_tag = f"<img {img_attrs}{closing}"
-    new_tag = f"<img {new_attrs}{closing}"
+    old_tag = f"<img {img_attrs}{closing_slash}>"
+    new_tag = f"<img {new_attrs}{closing_slash}>"
     new_line = line.replace(old_tag, new_tag)
+    return new_line, old_alt
+
+
+def _apply_wikilink_image_alt(
+    line: str, asset_path: str, new_alt: str
+) -> tuple[str, str | None]:
+    """
+    Apply alt text to a wikilink-style image syntax (e.g. Obsidian).
+
+    Args:
+        line: The line containing the image
+        asset_path: The asset path to match
+        new_alt: The new alt text to apply
+
+    Returns:
+        (modified line, old alt text or None)
+    """
+    # Match wikilink image syntax: ![[path]] or ![[path|alt]]
+    # Need to escape special regex chars in asset_path
+    escaped_path = re.escape(asset_path)
+    pattern = rf"!\[\[{escaped_path}(?:\|([^\]]*))?\]\]"
+
+    match = re.search(pattern, line)
+    if not match:
+        return line, None
+
+    old_alt = match.group(1) if match.group(1) else None
+    # Replace with new alt text
+    new_line = re.sub(pattern, f"![[{asset_path}|{new_alt}]]", line, count=1)
     return new_line, old_alt
 
 
@@ -139,6 +168,12 @@ def _apply_caption_to_file(
     modified_line, old_alt = _apply_markdown_image_alt(
         original_line, caption_item.asset_path, caption_item.final_alt
     )
+
+    # If no change, try wikilink image
+    if modified_line == original_line:
+        modified_line, old_alt = _apply_wikilink_image_alt(
+            original_line, caption_item.asset_path, caption_item.final_alt
+        )
 
     # If no change, try HTML image
     if modified_line == original_line:
