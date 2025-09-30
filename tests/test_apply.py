@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from rich.console import Console
+from io import StringIO
 
 from alt_text_llm import apply, utils
 
@@ -13,6 +14,13 @@ from alt_text_llm import apply, utils
 def console():
     """Create a Rich console for tests."""
     return Console()
+
+
+@pytest.fixture
+def console_with_output():
+    """Create a Rich console that captures output to StringIO."""
+    output = StringIO()
+    return Console(file=output, width=120), output
 
 
 @pytest.fixture
@@ -446,3 +454,159 @@ def test_markdown_image_alt_with_multiple_special_chars() -> None:
 
     assert old_alt is None
     assert new_line == f"![{new_alt}](test.png)"
+
+
+def test_display_unused_entries_empty(console_with_output: tuple) -> None:
+    """Test displaying unused entries with empty set."""
+    console, output = console_with_output
+    unused_entries: set[tuple[str, str]] = set()
+
+    apply._display_unused_entries(unused_entries, console)
+
+    # Should produce no output
+    assert output.getvalue() == ""
+
+
+def test_display_unused_entries_single(console_with_output: tuple) -> None:
+    """Test displaying a single unused entry."""
+    console, output = console_with_output
+    unused_entries = {("path/to/file.md", "image.png")}
+
+    apply._display_unused_entries(unused_entries, console)
+
+    result = output.getvalue()
+    assert "1 entry without 'final_alt' will be skipped:" in result
+    assert "path/to/file.md: image.png" in result
+
+
+def test_display_unused_entries_multiple(console_with_output: tuple) -> None:
+    """Test displaying multiple unused entries."""
+    console, output = console_with_output
+    unused_entries = {
+        ("path/to/file1.md", "image1.png"),
+        ("path/to/file2.md", "image2.png"),
+        ("path/to/file1.md", "image3.png"),
+    }
+
+    apply._display_unused_entries(unused_entries, console)
+
+    result = output.getvalue()
+    assert "3 entries without 'final_alt' will be skipped:" in result
+    assert "path/to/file1.md: image1.png" in result
+    assert "path/to/file1.md: image3.png" in result
+    assert "path/to/file2.md: image2.png" in result
+
+
+def test_display_unused_entries_sorted() -> None:
+    """Test that unused entries are displayed in sorted order."""
+    from io import StringIO
+
+    output = StringIO()
+    console = Console(file=output, width=120)
+    unused_entries = {
+        ("z_file.md", "z_image.png"),
+        ("a_file.md", "a_image.png"),
+        ("m_file.md", "m_image.png"),
+    }
+
+    apply._display_unused_entries(unused_entries, console)
+
+    result = output.getvalue()
+    lines = [
+        line.strip()
+        for line in result.splitlines()
+        if ":" in line and ".md" in line
+    ]
+    assert len(lines) == 3
+    assert "a_file.md: a_image.png" in lines[0]
+    assert "m_file.md: m_image.png" in lines[1]
+    assert "z_file.md: z_image.png" in lines[2]
+
+
+def test_apply_captions_with_unused_entries(
+    temp_dir: Path, markdown_file_with_image: Path, console_with_output: tuple
+) -> None:
+    """Test that apply_captions correctly reports unused entries."""
+    console, output = console_with_output
+
+    # Create captions file with both used and unused entries
+    captions_path = temp_dir / "captions.json"
+    captions_data = [
+        {
+            "markdown_file": str(markdown_file_with_image),
+            "asset_path": "image.png",
+            "line_number": 3,
+            "suggested_alt": "suggested",
+            "final_alt": "new caption",
+            "model": "test-model",
+            "context_snippet": "context",
+        },
+        {
+            "markdown_file": str(markdown_file_with_image),
+            "asset_path": "unused_image.png",
+            "line_number": 5,
+            "suggested_alt": "suggested for unused",
+            "final_alt": "",  # Empty final_alt
+            "model": "test-model",
+            "context_snippet": "context",
+        },
+        {
+            "markdown_file": "another_file.md",
+            "asset_path": "another_image.png",
+            "line_number": 1,
+            "suggested_alt": "suggested for another",
+            "final_alt": None,  # No final_alt
+            "model": "test-model",
+            "context_snippet": "context",
+        },
+    ]
+    captions_path.write_text(json.dumps(captions_data))
+
+    applied_count = apply.apply_captions(captions_path, console, dry_run=False)
+
+    assert applied_count == 1
+
+    result = output.getvalue()
+    assert "2 entries without 'final_alt' will be skipped:" in result
+    assert "unused_image.png" in result
+    assert "another_image.png" in result
+
+
+def test_apply_captions_deduplicates_unused_entries(
+    temp_dir: Path, markdown_file_with_image: Path, console_with_output: tuple
+) -> None:
+    """Test that duplicate unused entries are deduplicated."""
+    console, output = console_with_output
+
+    # Create captions file with duplicate unused entries
+    captions_path = temp_dir / "captions.json"
+    captions_data = [
+        {
+            "markdown_file": "file.md",
+            "asset_path": "path/to/image.png",
+            "line_number": 1,
+            "suggested_alt": "suggested",
+            "final_alt": "",
+            "model": "test-model",
+            "context_snippet": "context",
+        },
+        {
+            "markdown_file": "file.md",
+            "asset_path": "path/to/image.png",
+            "line_number": 2,
+            "suggested_alt": "suggested again",
+            "final_alt": None,
+            "model": "test-model",
+            "context_snippet": "context",
+        },
+    ]
+    captions_path.write_text(json.dumps(captions_data))
+
+    applied_count = apply.apply_captions(captions_path, console, dry_run=False)
+
+    assert applied_count == 0
+
+    result = output.getvalue()
+    # Should only show 1 entry, not 2 (deduplicated)
+    assert "1 entry without 'final_alt' will be skipped:" in result
+    assert "file.md: image.png" in result

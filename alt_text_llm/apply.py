@@ -135,6 +135,19 @@ def _apply_wikilink_image_alt(
     return new_line, old_alt
 
 
+def _display_unused_entries(
+    unused_entries: set[tuple[str, str]], console: Console
+) -> None:
+    if not unused_entries:
+        return
+
+    console.print(
+        f"[yellow]Note: {len(unused_entries)} {'entry' if len(unused_entries) == 1 else 'entries'} without 'final_alt' will be skipped:[/yellow]"
+    )
+    for markdown_file, asset_basename in sorted(unused_entries):
+        console.print(f"[dim]  {markdown_file}: {asset_basename}[/dim]")
+
+
 def _apply_caption_to_file(
     md_path: Path,
     caption_item: utils.AltGenerationResult,
@@ -231,6 +244,8 @@ def apply_captions(
 
     # Convert to AltGenerationResult objects and filter for final_alt
     captions_to_apply: list[utils.AltGenerationResult] = []
+    unused_entries: set[tuple[str, str]] = set()
+
     for item in captions_data:
         if item.get("final_alt") and item.get("final_alt").strip():
             captions_to_apply.append(
@@ -244,6 +259,15 @@ def apply_captions(
                     final_alt=item["final_alt"],
                 )
             )
+        else:
+            unused_entries.add(
+                (
+                    item["markdown_file"],
+                    Path(item["asset_path"]).name,
+                )
+            )
+
+    _display_unused_entries(unused_entries, console)
 
     if not captions_to_apply:
         console.print(
