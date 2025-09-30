@@ -28,7 +28,7 @@ def _apply_markdown_image_alt(
     # Match markdown image syntax: ![alt](path)
     # Need to escape special regex chars in asset_path
     escaped_path = re.escape(asset_path)
-    pattern = rf"!\[([^\]]*)\]\({escaped_path}\)"
+    pattern = rf"!\[([^\]]*)\]\({escaped_path}\s*\)"
 
     match = re.search(pattern, line)
     if not match:

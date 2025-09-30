@@ -79,6 +79,17 @@ def test_apply_markdown_image_alt_empty() -> None:
     assert new_line == "This is ![new alt text](path/to/image.png) in text"
 
 
+def test_apply_markdown_image_alt_whitespace_before_paren() -> None:
+    """Test applying alt text when there's whitespace before closing paren."""
+    line = "This is ![old alt](path/to/image.png ) in text"
+    new_line, old_alt = apply._apply_markdown_image_alt(
+        line, "path/to/image.png", "new alt text"
+    )
+
+    assert old_alt == "old alt"
+    assert new_line == "This is ![new alt text](path/to/image.png) in text"
+
+
 def test_apply_html_image_alt_existing() -> None:
     """Test applying alt text to HTML img tag with existing alt."""
     line = '<img alt="old alt" src="path/to/image.png">'
