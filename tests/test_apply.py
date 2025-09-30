@@ -365,3 +365,73 @@ def test_apply_wikilink_image_alt_special_chars() -> None:
 
     assert old_alt is None
     assert new_line == "Image: ![[path/to/image (1).png|new alt]] here"
+
+
+def test_markdown_image_alt_with_backslash() -> None:
+    """Test applying alt text containing backslash (regex special char)."""
+    line = "This is ![old alt](image.png) in text"
+    # Alt text with backslash that would cause re.error if not handled properly
+    new_alt = r"A diagram\showing states A, B, and C"
+    new_line, old_alt = apply._apply_markdown_image_alt(
+        line, "image.png", new_alt
+    )
+
+    assert old_alt == "old alt"
+    assert new_line == f"This is ![{new_alt}](image.png) in text"
+
+
+def test_markdown_image_alt_with_dollar_sign() -> None:
+    """Test applying alt text containing dollar sign (backreference char)."""
+    line = "This is ![](image.png) in text"
+    new_alt = "Price is $100 and $200"
+    new_line, old_alt = apply._apply_markdown_image_alt(
+        line, "image.png", new_alt
+    )
+
+    assert old_alt is None
+    assert new_line == f"This is ![{new_alt}](image.png) in text"
+
+
+def test_html_image_alt_with_backslash() -> None:
+    """Test applying HTML alt text containing backslash."""
+    line = '<img alt="old" src="image.png">'
+    new_alt = r"Diagram\showing process"
+    new_line, old_alt = apply._apply_html_image_alt(line, "image.png", new_alt)
+
+    assert old_alt == "old"
+    assert new_line == f'<img alt="{new_alt}" src="image.png">'
+
+
+def test_html_image_alt_no_alt_with_backslash() -> None:
+    """Test adding HTML alt text containing backslash when no alt exists."""
+    line = '<img src="image.png">'
+    new_alt = r"A state transition diagram\showing paths"
+    new_line, old_alt = apply._apply_html_image_alt(line, "image.png", new_alt)
+
+    assert old_alt is None
+    assert new_line == f'<img alt="{new_alt}" src="image.png">'
+
+
+def test_wikilink_image_alt_with_backslash() -> None:
+    """Test applying wikilink alt text containing backslash."""
+    line = "Image: ![[image.png|old alt]] here"
+    new_alt = r"Diagram\with backslash"
+    new_line, old_alt = apply._apply_wikilink_image_alt(
+        line, "image.png", new_alt
+    )
+
+    assert old_alt == "old alt"
+    assert new_line == f"Image: ![[image.png|{new_alt}]] here"
+
+
+def test_markdown_image_alt_with_multiple_special_chars() -> None:
+    """Test alt text with multiple regex special characters."""
+    line = "![](test.png)"
+    # Complex alt text that would fail without proper escaping
+    new_alt = r"A diagram (version 1.0) showing $variable\in set {A, B, C}"
+    new_line, old_alt = apply._apply_markdown_image_alt(
+        line, "test.png", new_alt
+    )
+
+    assert old_alt is None
+    assert new_line == f"![{new_alt}](test.png)"

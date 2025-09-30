@@ -34,8 +34,10 @@ def _apply_markdown_image_alt(
         return line, None
 
     old_alt = match.group(1) if match.group(1) else None
-    # Replace the alt text
-    new_line = re.sub(pattern, f"![{new_alt}]({asset_path})", line, count=1)
+    # Replace the alt text - use lambda to avoid backslash interpretation in replacement
+    new_line = re.sub(
+        pattern, lambda m: f"![{new_alt}]({asset_path})", line, count=1
+    )
     return new_line, old_alt
 
 
@@ -57,8 +59,8 @@ def _apply_html_image_alt(
     escaped_path = re.escape(asset_path)
 
     # Match img tag with this src (handles both > and /> endings)
-    # Capture group 1: attributes, Group 2: closing (either "/" or "")
-    img_pattern = rf'<img\s+([^>]*src="{escaped_path}"[^/>]*?)\s*(/?)>'
+    # Capture group 1: attributes, Group 2: whitespace before closing, Group 3: closing slash
+    img_pattern = rf'<img\s+([^>]*src="{escaped_path}"[^/>]*?)(\s*)(/?)>'
 
     match = re.search(img_pattern, line, re.IGNORECASE | re.DOTALL)
     if not match:
@@ -66,7 +68,8 @@ def _apply_html_image_alt(
 
     img_attrs = match.group(1).rstrip()  # Remove trailing whitespace
     old_alt: str | None = None
-    closing_slash = match.group(2)  # Either "/" or ""
+    whitespace_before_close = match.group(2)  # Whitespace before closing
+    closing_slash = match.group(3)  # Either "/" or ""
 
     # Check if alt attribute exists
     alt_pattern = r'alt="([^"]*)"'
@@ -74,27 +77,28 @@ def _apply_html_image_alt(
 
     if alt_match:
         old_alt = alt_match.group(1)
-        # Replace existing alt
+        # Replace existing alt - use lambda to avoid backslash interpretation
         new_attrs = re.sub(
             alt_pattern,
-            f'alt="{new_alt}"',
+            lambda m: f'alt="{new_alt}"',
             img_attrs,
             count=1,
             flags=re.IGNORECASE,
         )
     else:
         # Add alt attribute (insert before src or at the end)
+        # Use lambda to avoid backslash interpretation in replacement
         new_attrs = re.sub(
             rf'(src="{escaped_path}")',
-            rf'alt="{new_alt}" \1',
+            lambda m: f'alt="{new_alt}" {m.group(1)}',
             img_attrs,
             count=1,
             flags=re.IGNORECASE,
         )
 
-    # Reconstruct the img tag with proper closing
-    old_tag = f"<img {img_attrs}{closing_slash}>"
-    new_tag = f"<img {new_attrs}{closing_slash}>"
+    # Reconstruct the img tag with proper closing, preserving original whitespace
+    old_tag = f"<img {img_attrs}{whitespace_before_close}{closing_slash}>"
+    new_tag = f"<img {new_attrs}{whitespace_before_close}{closing_slash}>"
     new_line = line.replace(old_tag, new_tag)
     return new_line, old_alt
 
@@ -123,8 +127,10 @@ def _apply_wikilink_image_alt(
         return line, None
 
     old_alt = match.group(1) if match.group(1) else None
-    # Replace with new alt text
-    new_line = re.sub(pattern, f"![[{asset_path}|{new_alt}]]", line, count=1)
+    # Replace with new alt text - use lambda to avoid backslash interpretation
+    new_line = re.sub(
+        pattern, lambda m: f"![[{asset_path}|{new_alt}]]", line, count=1
+    )
     return new_line, old_alt
 
 
