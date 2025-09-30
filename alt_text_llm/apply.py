@@ -292,27 +292,21 @@ def _apply_caption_to_file(
     return (old_alt, caption_item.final_alt)
 
 
-def apply_captions(
+def _load_and_parse_captions(
     captions_path: Path,
-    console: Console,
-    dry_run: bool = False,
-) -> int:
+) -> tuple[list[utils.AltGenerationResult], set[tuple[str, str]]]:
     """
-    Apply captions from a JSON file to markdown files.
+    Load captions from JSON and parse into AltGenerationResult objects.
 
     Args:
         captions_path: Path to the captions JSON file
-        console: Rich console for output
-        dry_run: If True, show what would be done without modifying files
 
     Returns:
-        Number of successfully applied captions
+        Tuple of (captions to apply, unused entries)
     """
-    # Load captions as AltGenerationResult objects
     with open(captions_path, encoding="utf-8") as f:
         captions_data = json.load(f)
 
-    # Convert to AltGenerationResult objects and filter for final_alt
     captions_to_apply: list[utils.AltGenerationResult] = []
     unused_entries: set[tuple[str, str]] = set()
 
@@ -337,6 +331,114 @@ def apply_captions(
                 )
             )
 
+    return captions_to_apply, unused_entries
+
+
+def _group_captions_by_file(
+    captions: list[utils.AltGenerationResult],
+) -> dict[str, list[utils.AltGenerationResult]]:
+    """
+    Group captions by their markdown file.
+
+    Args:
+        captions: List of captions to group
+
+    Returns:
+        Dictionary mapping file paths to lists of captions
+    """
+    by_file: dict[str, list[utils.AltGenerationResult]] = defaultdict(list)
+    for item in captions:
+        by_file[item.markdown_file].append(item)
+    return by_file
+
+
+def _display_caption_result(
+    result: tuple[str | None, str],
+    item: utils.AltGenerationResult,
+    console: Console,
+    dry_run: bool,
+) -> None:
+    """
+    Display the result of applying a caption.
+
+    Args:
+        result: Tuple of (old_alt, new_alt)
+        item: The caption item that was applied
+        console: Rich console for output
+        dry_run: Whether this is a dry run
+    """
+    old_alt, new_alt = result
+    status = "Would apply" if dry_run else "Applied"
+    old_text = f'"{old_alt}"' if old_alt else "(no alt)"
+
+    # Build message with Text to avoid markup parsing issues
+    message = Text("  ")
+    message.append(f"{status}:", style="green")
+    message.append(f' {old_text} → "{new_alt}" @ line {item.line_number}')
+    console.print(message)
+
+
+def _process_file_captions(
+    md_path: Path,
+    items: list[utils.AltGenerationResult],
+    console: Console,
+    dry_run: bool,
+) -> int:
+    """
+    Process all captions for a single file.
+
+    Args:
+        md_path: Path to the markdown file
+        items: List of captions to apply to this file
+        console: Rich console for output
+        dry_run: If True, don't actually modify files
+
+    Returns:
+        Number of successfully applied captions
+    """
+    if not md_path.exists():
+        console.print(f"[yellow]Warning: File not found: {md_path}[/yellow]")
+        return 0
+
+    console.print(f"\n[dim]Processing {md_path} ({len(items)} captions)[/dim]")
+
+    # Sort by line number (descending) to avoid line shifts when modifying
+    items_sorted = sorted(items, key=lambda x: x.line_number, reverse=True)
+
+    applied_count = 0
+    for item in items_sorted:
+        result = _apply_caption_to_file(
+            md_path=md_path,
+            caption_item=item,
+            console=console,
+            dry_run=dry_run,
+        )
+
+        if result:
+            applied_count += 1
+            _display_caption_result(result, item, console, dry_run)
+
+    return applied_count
+
+
+def apply_captions(
+    captions_path: Path,
+    console: Console,
+    dry_run: bool = False,
+) -> int:
+    """
+    Apply captions from a JSON file to markdown files.
+
+    Args:
+        captions_path: Path to the captions JSON file
+        console: Rich console for output
+        dry_run: If True, show what would be done without modifying files
+
+    Returns:
+        Number of successfully applied captions
+    """
+    captions_to_apply, unused_entries = _load_and_parse_captions(captions_path)
+
     _display_unused_entries(unused_entries, console)
 
     if not captions_to_apply:
@@ -349,51 +451,14 @@ def apply_captions(
         f"[blue]Found {len(captions_to_apply)} captions to apply{' (dry run)' if dry_run else ''}[/blue]"
     )
 
-    # Group by file for better organization
-    by_file: dict[str, list[utils.AltGenerationResult]] = defaultdict(list)
-    for item in captions_to_apply:
-        by_file[item.markdown_file].append(item)
+    by_file = _group_captions_by_file(captions_to_apply)
 
     applied_count = 0
-
-    # Process each file
     for md_file, items in by_file.items():
         md_path = Path(md_file)
-
-        if not md_path.exists():
-            console.print(
-                f"[yellow]Warning: File not found: {md_path}[/yellow]"
-            )
-            continue
-
-        console.print(
-            f"\n[dim]Processing {md_path} ({len(items)} captions)[/dim]"
+        applied_count += _process_file_captions(
+            md_path, items, console, dry_run
         )
-
-        # Sort by line number (descending) to avoid line shifts when modifying
-        items_sorted = sorted(items, key=lambda x: x.line_number, reverse=True)
-
-        for item in items_sorted:
-            result = _apply_caption_to_file(
-                md_path=md_path,
-                caption_item=item,
-                console=console,
-                dry_run=dry_run,
-            )
-
-            if result:
-                old_alt, new_alt = result
-                applied_count += 1
-                status = "Would apply" if dry_run else "Applied"
-                old_text = f'"{old_alt}"' if old_alt else "(no alt)"
-
-                # Build message with Text to avoid markup parsing issues
-                message = Text("  ")
-                message.append(f"{status}:", style="green")
-                message.append(
-                    f' {old_text} → "{new_alt}" @ line {item.line_number}'
-                )
-                console.print(message)
 
     return applied_count
 
