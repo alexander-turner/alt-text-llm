@@ -1,9 +1,8 @@
-"""Tests for alt_text_utils.py module."""
+"""Tests for utils.py module."""
 
 import json
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 from unittest import mock
 from unittest.mock import Mock, patch
@@ -12,25 +11,7 @@ import git
 import pytest
 import requests
 
-sys.path.append(str(Path(__file__).parent.parent))
-
-from .. import alt_text_utils, scan_for_empty_alt
-from . import utils as test_utils
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def base_queue_item(temp_dir: Path) -> scan_for_empty_alt.QueueItem:
-    """Provides a base QueueItem for testing."""
-    return scan_for_empty_alt.QueueItem(
-        markdown_file=str(temp_dir / "test.md"),
-        asset_path="image.jpg",
-        line_number=5,
-        context_snippet="This is a test image context.",
-    )
+from alt_text_llm import scan, utils
 
 
 @pytest.mark.parametrize(
@@ -54,7 +35,7 @@ def base_queue_item(temp_dir: Path) -> scan_for_empty_alt.QueueItem:
     ],
 )
 def test_build_prompt_edge_cases(
-    base_queue_item: scan_for_empty_alt.QueueItem,
+    base_queue_item: scan.QueueItem,
     markdown_file: str,
     context_snippet: str,
     max_chars: int,
@@ -65,11 +46,11 @@ def test_build_prompt_edge_cases(
 
     # Mock generate_article_context to return the context_snippet
     with patch.object(
-        alt_text_utils,
+        utils,
         "generate_article_context",
         return_value=context_snippet,
     ):
-        prompt = alt_text_utils.build_prompt(base_queue_item, max_chars)
+        prompt = utils.build_prompt(base_queue_item, max_chars)
 
     for expected in expected_in_prompt:
         assert expected in prompt
@@ -106,7 +87,7 @@ Para 9: Ninth paragraph (should not appear)"""
 
     def test_generates_article_context(self, sample_markdown: Path) -> None:
         """Test that article context includes all before and 2 after target (default trim_frontmatter=False)."""
-        queue_item = scan_for_empty_alt.QueueItem(
+        queue_item = scan.QueueItem(
             markdown_file=str(sample_markdown),
             asset_path="image.jpg",
             line_number=11,  # "Para 6: Sixth paragraph with image"
@@ -114,7 +95,7 @@ Para 9: Ninth paragraph (should not appear)"""
         )
 
         # Test default behavior (trim_frontmatter=False)
-        context = alt_text_utils.generate_article_context(queue_item)
+        context = utils.generate_article_context(queue_item)
 
         # Verify correct inclusion/exclusion
         should_include = [
@@ -155,7 +136,7 @@ Para 9: Ninth paragraph (should not appear)"""
             if "Para 2 with image" in line
         )
 
-        queue_item = scan_for_empty_alt.QueueItem(
+        queue_item = scan.QueueItem(
             markdown_file=str(markdown_file),
             asset_path="image.jpg",
             line_number=target_line,
@@ -163,7 +144,7 @@ Para 9: Ninth paragraph (should not appear)"""
         )
 
         # Test default behavior (trim_frontmatter=False) - frontmatter should be preserved
-        context = alt_text_utils.generate_article_context(queue_item)
+        context = utils.generate_article_context(queue_item)
 
         # Verify frontmatter is preserved and content remains
         assert "title: Test Article" in context
@@ -181,14 +162,14 @@ Para 9: Ninth paragraph (should not appear)"""
             content=content,
         )
 
-        queue_item = scan_for_empty_alt.QueueItem(
+        queue_item = scan.QueueItem(
             markdown_file=str(markdown_file),
             asset_path="image.jpg",
             line_number=3,  # "Para 2 with image"
             context_snippet="unused",
         )
 
-        context = alt_text_utils.generate_article_context(queue_item)
+        context = utils.generate_article_context(queue_item)
 
         # Verify all content is included
         assert "Para 1" in context
@@ -216,14 +197,14 @@ Para 9: Ninth paragraph (should not appear)"""
             if "Target para" in line
         )
 
-        queue_item = scan_for_empty_alt.QueueItem(
+        queue_item = scan.QueueItem(
             markdown_file=str(markdown_file),
             asset_path="image.jpg",
             line_number=target_line,
             context_snippet="unused",
         )
 
-        context = alt_text_utils.generate_article_context(
+        context = utils.generate_article_context(
             queue_item, max_before=1, max_after=1, trim_frontmatter=True
         )
 
@@ -256,14 +237,14 @@ Para 9: Ninth paragraph (should not appear)"""
             if "Para 2: Target paragraph" in line
         )
 
-        queue_item = scan_for_empty_alt.QueueItem(
+        queue_item = scan.QueueItem(
             markdown_file=str(markdown_file),
             asset_path="image.jpg",
             line_number=target_line,
             context_snippet="unused",
         )
 
-        context = alt_text_utils.generate_article_context(
+        context = utils.generate_article_context(
             queue_item, trim_frontmatter=True
         )
 
@@ -302,14 +283,14 @@ Para 9: Ninth paragraph (should not appear)"""
             if "Para 2: Target paragraph" in line
         )
 
-        queue_item = scan_for_empty_alt.QueueItem(
+        queue_item = scan.QueueItem(
             markdown_file=str(markdown_file),
             asset_path="image.jpg",
             line_number=target_line,
             context_snippet="unused",
         )
 
-        context = alt_text_utils.generate_article_context(
+        context = utils.generate_article_context(
             queue_item, trim_frontmatter=False
         )
 
@@ -334,7 +315,7 @@ Para 9: Ninth paragraph (should not appear)"""
             content=content,
         )
 
-        queue_item = scan_for_empty_alt.QueueItem(
+        queue_item = scan.QueueItem(
             markdown_file=str(markdown_file),
             asset_path="image.jpg",
             line_number=3,  # "Para 2: Target paragraph"
@@ -342,10 +323,10 @@ Para 9: Ninth paragraph (should not appear)"""
         )
 
         # Test both trim_frontmatter=True and False should work the same
-        context_true = alt_text_utils.generate_article_context(
+        context_true = utils.generate_article_context(
             queue_item, trim_frontmatter=True
         )
-        context_false = alt_text_utils.generate_article_context(
+        context_false = utils.generate_article_context(
             queue_item, trim_frontmatter=False
         )
 
@@ -379,7 +360,7 @@ Para 9: Ninth paragraph (should not appear)"""
             if "Target para" in line
         )
 
-        queue_item = scan_for_empty_alt.QueueItem(
+        queue_item = scan.QueueItem(
             markdown_file=str(markdown_file),
             asset_path="image.jpg",
             line_number=target_line,
@@ -387,7 +368,7 @@ Para 9: Ninth paragraph (should not appear)"""
         )
 
         # Test with trim_frontmatter=True and limited context
-        context = alt_text_utils.generate_article_context(
+        context = utils.generate_article_context(
             queue_item, max_before=1, max_after=1, trim_frontmatter=True
         )
 
@@ -412,7 +393,7 @@ Para 9: Ninth paragraph (should not appear)"""
             content=content,
         )
 
-        queue_item = scan_for_empty_alt.QueueItem(
+        queue_item = scan.QueueItem(
             markdown_file=str(markdown_file),
             asset_path="image.jpg",
             line_number=4,  # Content paragraph line
@@ -420,7 +401,7 @@ Para 9: Ninth paragraph (should not appear)"""
         )
 
         # Call without trim_frontmatter parameter (should default to False)
-        context = alt_text_utils.generate_article_context(queue_item)
+        context = utils.generate_article_context(queue_item)
 
         # Should preserve frontmatter by default
         assert "title: Default Test" in context
@@ -462,14 +443,14 @@ def test_edge_positions(
         temp_dir / "test_edge.md", content=content
     )
 
-    queue_item = scan_for_empty_alt.QueueItem(
+    queue_item = scan.QueueItem(
         markdown_file=str(test_md),
         asset_path="image.jpg",
         line_number=target_line,
         context_snippet="unused",
     )
 
-    context = alt_text_utils.generate_article_context(queue_item)
+    context = utils.generate_article_context(queue_item)
 
     for text in should_include:
         assert text in context, f"Expected '{text}' in context"
@@ -516,14 +497,14 @@ Para 11: Should not appear"""
         text = extensive_markdown.read_text(encoding="utf-8")
         lines = text.splitlines()
         line_number = lines.index("Para 8: Target paragraph with image") + 1
-        queue_item = scan_for_empty_alt.QueueItem(
+        queue_item = scan.QueueItem(
             markdown_file=str(extensive_markdown),
             asset_path="image.jpg",
             line_number=line_number,
             context_snippet="This is the original full context that includes everything",
         )
 
-        prompt = alt_text_utils.build_prompt(queue_item, max_chars=200)
+        prompt = utils.build_prompt(queue_item, max_chars=200)
 
         # Verify full context before target is used (all before + target + 2 after)
         should_be_in_prompt = [
@@ -562,14 +543,14 @@ Para 11: Should not appear"""
         expected_in_prompt: list[str],
     ) -> None:
         """Test that prompt includes the specified character limit."""
-        queue_item = scan_for_empty_alt.QueueItem(
+        queue_item = scan.QueueItem(
             markdown_file=str(extensive_markdown),
             asset_path="image.jpg",
             line_number=17,
             context_snippet="unused",
         )
 
-        prompt = alt_text_utils.build_prompt(queue_item, max_chars=max_chars)
+        prompt = utils.build_prompt(queue_item, max_chars=max_chars)
 
         for expected in expected_in_prompt:
             assert expected in prompt
@@ -583,7 +564,7 @@ class TestConvertAvifToPng:
         test_file = temp_dir / "test.jpg"
         test_utils.create_test_image(test_file, "100x100")
 
-        result = alt_text_utils._convert_avif_to_png(test_file, temp_dir)
+        result = utils._convert_avif_to_png(test_file, temp_dir)
         assert result == test_file
 
     def test_avif_conversion_success(self, temp_dir: Path) -> None:
@@ -594,7 +575,7 @@ class TestConvertAvifToPng:
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = None
-            result = alt_text_utils._convert_avif_to_png(avif_file, temp_dir)
+            result = utils._convert_avif_to_png(avif_file, temp_dir)
 
             assert result == png_file
             mock_run.assert_called_once()
@@ -623,10 +604,10 @@ class TestConvertAvifToPng:
             )
 
             with pytest.raises(
-                alt_text_utils.AltGenerationError,
+                utils.AltGenerationError,
                 match="Failed to convert AVIF to PNG",
             ):
-                alt_text_utils._convert_avif_to_png(avif_file, temp_dir)
+                utils._convert_avif_to_png(avif_file, temp_dir)
 
 
 class TestConvertGifToMp4:
@@ -638,7 +619,7 @@ class TestConvertGifToMp4:
         test_utils.create_test_image(test_file, "100x100")
 
         with pytest.raises(ValueError, match="Unsupported file type"):
-            alt_text_utils._convert_gif_to_mp4(test_file, temp_dir)
+            utils._convert_gif_to_mp4(test_file, temp_dir)
 
     def test_gif_conversion_success(self, temp_dir: Path) -> None:
         """Test successful GIF to MP4 conversion."""
@@ -648,7 +629,7 @@ class TestConvertGifToMp4:
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = None
-            result = alt_text_utils._convert_gif_to_mp4(gif_file, temp_dir)
+            result = utils._convert_gif_to_mp4(gif_file, temp_dir)
 
             assert result == mp4_file
             mock_run.assert_called_once()
@@ -674,37 +655,37 @@ class TestConvertGifToMp4:
             mock_run.side_effect = exc
 
             with pytest.raises(
-                alt_text_utils.AltGenerationError,
+                utils.AltGenerationError,
                 match=f"Failed to convert GIF to MP4: {exc!s}",
             ):
-                alt_text_utils._convert_gif_to_mp4(gif_file, temp_dir)
+                utils._convert_gif_to_mp4(gif_file, temp_dir)
 
 
 class TestConvertAssetForLlm:
     """Test the asset conversion router function."""
 
-    @patch("scripts.alt_text_utils._convert_avif_to_png")
+    @patch("scripts.utils._convert_avif_to_png")
     def test_avif_calls_avif_converter(
         self, mock_convert: Mock, temp_dir: Path
     ) -> None:
         """Test that .avif files are routed to the AVIF converter."""
         avif_file = temp_dir / "test.avif"
-        alt_text_utils._convert_asset_for_llm(avif_file, temp_dir)
+        utils._convert_asset_for_llm(avif_file, temp_dir)
         mock_convert.assert_called_once_with(avif_file, temp_dir)
 
-    @patch("scripts.alt_text_utils._convert_gif_to_mp4")
+    @patch("scripts.utils._convert_gif_to_mp4")
     def test_gif_calls_gif_converter(
         self, mock_convert: Mock, temp_dir: Path
     ) -> None:
         """Test that .gif files are routed to the GIF converter."""
         gif_file = temp_dir / "test.gif"
-        alt_text_utils._convert_asset_for_llm(gif_file, temp_dir)
+        utils._convert_asset_for_llm(gif_file, temp_dir)
         mock_convert.assert_called_once_with(gif_file, temp_dir)
 
     def test_unsupported_file_passthrough(self, temp_dir: Path) -> None:
         """Test that unsupported files are passed through."""
         jpg_file = temp_dir / "test.jpg"
-        result = alt_text_utils._convert_asset_for_llm(jpg_file, temp_dir)
+        result = utils._convert_asset_for_llm(jpg_file, temp_dir)
         assert result == jpg_file
 
 
@@ -712,7 +693,7 @@ class TestDownloadAsset:
     """Test the asset download function."""
 
     def test_local_file_exists_non_avif(
-        self, temp_dir: Path, base_queue_item: scan_for_empty_alt.QueueItem
+        self, temp_dir: Path, base_queue_item: scan.QueueItem
     ) -> None:
         """Test downloading local non-AVIF file."""
         test_file = temp_dir / "image.jpg"
@@ -720,13 +701,13 @@ class TestDownloadAsset:
 
         base_queue_item.asset_path = "image.jpg"
 
-        result = alt_text_utils.download_asset(base_queue_item, temp_dir)
+        result = utils.download_asset(base_queue_item, temp_dir)
 
         # Should return the original file since it's not AVIF
         assert result == test_file.resolve()
 
     def test_local_file_exists_avif(
-        self, temp_dir: Path, base_queue_item: scan_for_empty_alt.QueueItem
+        self, temp_dir: Path, base_queue_item: scan.QueueItem
     ) -> None:
         """Test downloading local AVIF file gets converted."""
         avif_file = temp_dir / "image.avif"
@@ -736,13 +717,13 @@ class TestDownloadAsset:
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = None
-            result = alt_text_utils.download_asset(base_queue_item, temp_dir)
+            result = utils.download_asset(base_queue_item, temp_dir)
 
             assert result.suffix == ".png"
             assert result.parent == temp_dir
 
     def test_url_download_success(
-        self, temp_dir: Path, base_queue_item: scan_for_empty_alt.QueueItem
+        self, temp_dir: Path, base_queue_item: scan.QueueItem
     ) -> None:
         """Test successful URL download."""
         base_queue_item.asset_path = "https://example.com/image.jpg"
@@ -752,7 +733,7 @@ class TestDownloadAsset:
         mock_response.raise_for_status.return_value = None
 
         with patch("requests.get", return_value=mock_response) as mock_get:
-            result = alt_text_utils.download_asset(base_queue_item, temp_dir)
+            result = utils.download_asset(base_queue_item, temp_dir)
 
             mock_get.assert_called_once()
             call_kwargs = mock_get.call_args[1]
@@ -764,7 +745,7 @@ class TestDownloadAsset:
             assert result.name.startswith("asset")
 
     def test_url_download_avif_conversion(
-        self, temp_dir: Path, base_queue_item: scan_for_empty_alt.QueueItem
+        self, temp_dir: Path, base_queue_item: scan.QueueItem
     ) -> None:
         """Test URL download of AVIF file with conversion."""
         base_queue_item.asset_path = "https://example.com/image.avif"
@@ -776,24 +757,22 @@ class TestDownloadAsset:
         with patch("requests.get", return_value=mock_response):
             with patch("subprocess.run") as mock_run:
                 mock_run.return_value = None
-                result = alt_text_utils.download_asset(
-                    base_queue_item, temp_dir
-                )
+                result = utils.download_asset(base_queue_item, temp_dir)
 
                 # Should have converted to PNG
                 assert result.suffix == ".png"
                 mock_run.assert_called_once()
 
     def test_file_not_found(
-        self, temp_dir: Path, base_queue_item: scan_for_empty_alt.QueueItem
+        self, temp_dir: Path, base_queue_item: scan.QueueItem
     ) -> None:
         base_queue_item.asset_path = "nonexistent.jpg"
 
         with pytest.raises(FileNotFoundError, match="Unable to locate asset"):
-            alt_text_utils.download_asset(base_queue_item, temp_dir)
+            utils.download_asset(base_queue_item, temp_dir)
 
     def test_url_download_http_error(
-        self, temp_dir: Path, base_queue_item: scan_for_empty_alt.QueueItem
+        self, temp_dir: Path, base_queue_item: scan.QueueItem
     ) -> None:
         base_queue_item.asset_path = "https://turntrout.com/error.jpg"
 
@@ -806,7 +785,7 @@ class TestDownloadAsset:
             patch("requests.get", return_value=mock_response),
             pytest.raises(requests.HTTPError),
         ):
-            alt_text_utils.download_asset(base_queue_item, temp_dir)
+            utils.download_asset(base_queue_item, temp_dir)
 
     @pytest.mark.parametrize(
         "exception_type, exception_args",
@@ -819,7 +798,7 @@ class TestDownloadAsset:
     def test_url_download_request_errors(
         self,
         temp_dir: Path,
-        base_queue_item: scan_for_empty_alt.QueueItem,
+        base_queue_item: scan.QueueItem,
         exception_type,
         exception_args,
     ) -> None:
@@ -827,10 +806,10 @@ class TestDownloadAsset:
 
         with patch("requests.get") as mock_get, pytest.raises(exception_type):
             mock_get.side_effect = exception_type(*exception_args)
-            alt_text_utils.download_asset(base_queue_item, temp_dir)
+            utils.download_asset(base_queue_item, temp_dir)
 
     def test_url_download_partial_content(
-        self, temp_dir: Path, base_queue_item: scan_for_empty_alt.QueueItem
+        self, temp_dir: Path, base_queue_item: scan.QueueItem
     ) -> None:
         base_queue_item.asset_path = "https://example.com/partial.jpg"
 
@@ -841,7 +820,7 @@ class TestDownloadAsset:
         mock_response.raise_for_status.return_value = None
 
         with patch("requests.get", return_value=mock_response):
-            result = alt_text_utils.download_asset(base_queue_item, temp_dir)
+            result = utils.download_asset(base_queue_item, temp_dir)
 
             # Should still create file even with partial content
             assert result.exists()
@@ -851,7 +830,7 @@ class TestDownloadAsset:
 def test_write_output(temp_dir: Path) -> None:
     """Test writing results to JSON file."""
     results = [
-        alt_text_utils.AltGenerationResult(
+        utils.AltGenerationResult(
             markdown_file="test1.md",
             asset_path="image1.jpg",
             suggested_alt="First image",
@@ -860,7 +839,7 @@ def test_write_output(temp_dir: Path) -> None:
             context_snippet="First context",
             line_number=1,
         ),
-        alt_text_utils.AltGenerationResult(
+        utils.AltGenerationResult(
             markdown_file="test2.md",
             asset_path="image2.jpg",
             suggested_alt="Second image",
@@ -872,7 +851,7 @@ def test_write_output(temp_dir: Path) -> None:
     ]
 
     output_file = temp_dir / "output.json"
-    alt_text_utils.write_output(results, output_file)
+    utils.write_output(results, output_file)
 
     assert output_file.exists()
     with output_file.open("r", encoding="utf-8") as f:
@@ -886,9 +865,9 @@ def test_write_output(temp_dir: Path) -> None:
 
 def _create_test_result(
     markdown_file: str, asset_path: str, final_alt: str
-) -> alt_text_utils.AltGenerationResult:
+) -> utils.AltGenerationResult:
     """Helper to create a test result with minimal boilerplate."""
-    return alt_text_utils.AltGenerationResult(
+    return utils.AltGenerationResult(
         markdown_file=markdown_file,
         asset_path=asset_path,
         suggested_alt=final_alt,
@@ -944,10 +923,10 @@ def test_write_output_append_mode(
 
     # Write initial data if provided
     if initial_data:
-        alt_text_utils.write_output(initial_data, output_file)
+        utils.write_output(initial_data, output_file)
 
     # Append the additional results
-    alt_text_utils.write_output(append_data, output_file, append_mode=True)
+    utils.write_output(append_data, output_file, append_mode=True)
 
     # Verify results
     assert output_file.exists()
@@ -969,7 +948,7 @@ def test_write_output_append_mode_corrupted_file(temp_dir: Path) -> None:
     output_file.write_text("{ invalid json", encoding="utf-8")
 
     result = _create_test_result("test.md", "image.jpg", "Test image")
-    alt_text_utils.write_output([result], output_file, append_mode=True)
+    utils.write_output([result], output_file, append_mode=True)
 
     with output_file.open("r", encoding="utf-8") as f:
         data = json.load(f)
@@ -1021,7 +1000,7 @@ class TestLoadExistingCaptions:
         captions_file = temp_dir / "captions.json"
         captions_file.write_text(json.dumps(captions_data), encoding="utf-8")
 
-        result = alt_text_utils.load_existing_captions(captions_file)
+        result = utils.load_existing_captions(captions_file)
         assert result == expected_paths
 
     def test_load_existing_captions_nonexistent_file(
@@ -1029,7 +1008,7 @@ class TestLoadExistingCaptions:
     ) -> None:
         """Test loading captions from non-existent file returns empty set."""
         nonexistent_file = temp_dir / "nonexistent.json"
-        result = alt_text_utils.load_existing_captions(nonexistent_file)
+        result = utils.load_existing_captions(nonexistent_file)
         assert result == set()
 
     def test_load_existing_captions_invalid_json(self, temp_dir: Path) -> None:
@@ -1037,7 +1016,7 @@ class TestLoadExistingCaptions:
         invalid_file = temp_dir / "invalid.json"
         invalid_file.write_text("{ invalid json", encoding="utf-8")
 
-        result = alt_text_utils.load_existing_captions(invalid_file)
+        result = utils.load_existing_captions(invalid_file)
         assert result == set()
 
     def test_load_existing_captions_non_list_json(
@@ -1047,7 +1026,7 @@ class TestLoadExistingCaptions:
         non_list_file = temp_dir / "non_list.json"
         non_list_file.write_text('{"not": "a list"}', encoding="utf-8")
 
-        result = alt_text_utils.load_existing_captions(non_list_file)
+        result = utils.load_existing_captions(non_list_file)
         assert result == set()
 
 
@@ -1076,7 +1055,7 @@ class TestLoadExistingCaptions:
 )
 def test_is_url(path: str, expected: bool) -> None:
     """Test URL detection functionality."""
-    assert alt_text_utils.is_url(path) is expected
+    assert utils.is_url(path) is expected
 
 
 # ---------------------------------------------------------------------------
@@ -1097,7 +1076,7 @@ def test_paragraph_context_grabs_neighboring_paragraphs() -> None:
         "Para D is outside of the context\n",
     ]
 
-    snippet = alt_text_utils.paragraph_context(lines, 2, max_after=0)
+    snippet = utils.paragraph_context(lines, 2, max_after=0)
 
     # Should include paragraphs A and B (target is line 2 which is in Para B)
     assert "Para A" in snippet
@@ -1183,7 +1162,7 @@ class TestParagraphContext:
     ) -> None:
         """Test paragraph_context with various max_before values."""
         target_line = sample_text_lines.index("Para F line 1")
-        snippet = alt_text_utils.paragraph_context(
+        snippet = utils.paragraph_context(
             sample_text_lines, target_line, max_before=max_before, max_after=0
         )
 
@@ -1205,9 +1184,7 @@ class TestParagraphContext:
         self, lines: list[str], target_line: int, expected_result: str
     ) -> None:
         """Test edge cases for paragraph_context."""
-        result = alt_text_utils.paragraph_context(
-            lines, target_line, max_after=0
-        )
+        result = utils.paragraph_context(lines, target_line, max_after=0)
         assert result == expected_result
 
     def test_preserves_formatting(self) -> None:
@@ -1223,9 +1200,7 @@ class TestParagraphContext:
             "Third paragraph",
         ]
 
-        snippet = alt_text_utils.paragraph_context(
-            lines, 4, max_before=1, max_after=0
-        )
+        snippet = utils.paragraph_context(lines, 4, max_before=1, max_after=0)
 
         assert "**bold**" in snippet
         assert "[link](url)" in snippet
@@ -1262,7 +1237,7 @@ class TestParagraphContext:
         ]
         target_line = 4  # "Para 3"
 
-        snippet = alt_text_utils.paragraph_context(
+        snippet = utils.paragraph_context(
             lines, target_line, max_before=max_before, max_after=0
         )
 
@@ -1274,9 +1249,7 @@ class TestParagraphContext:
     def test_out_of_bounds_target(self) -> None:
         """Test behavior when target line is out of bounds."""
         lines = ["Line 1", "", "Line 2"]
-        result = alt_text_utils.paragraph_context(
-            lines, 10, max_before=2, max_after=0
-        )
+        result = utils.paragraph_context(lines, 10, max_before=2, max_after=0)
         assert isinstance(result, str)  # Should not crash
 
 
@@ -1296,8 +1269,8 @@ def test_find_git_root(monkeypatch: pytest.MonkeyPatch) -> None:
             stdout=expected_output,
         )
 
-    monkeypatch.setattr(alt_text_utils.subprocess, "run", mock_subprocess_run)
-    assert alt_text_utils.get_git_root() == Path(expected_output)
+    monkeypatch.setattr(utils.subprocess, "run", mock_subprocess_run)
+    assert utils.get_git_root() == Path(expected_output)
 
 
 def test_get_git_root_raises_error() -> None:
@@ -1311,45 +1284,43 @@ def test_get_git_root_raises_error() -> None:
         )
 
     with (
-        mock.patch.object(
-            alt_text_utils.subprocess, "run", mock_subprocess_run
-        ),
+        mock.patch.object(utils.subprocess, "run", mock_subprocess_run),
         pytest.raises(RuntimeError),
     ):
-        alt_text_utils.get_git_root()
+        utils.get_git_root()
 
 
 def test_find_executable_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that find_executable raises FileNotFoundError for an executable
     that does not exist."""
-    monkeypatch.setattr(alt_text_utils, "_executable_cache", {})
+    monkeypatch.setattr(utils, "_executable_cache", {})
     monkeypatch.setattr(shutil, "which", lambda name: None)
     with pytest.raises(FileNotFoundError):
-        alt_text_utils.find_executable("non_existent_executable")
+        utils.find_executable("non_existent_executable")
 
 
 def test_find_executable_success_and_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test that find_executable finds an executable and caches the result."""
-    monkeypatch.setattr(alt_text_utils, "_executable_cache", {})
+    monkeypatch.setattr(utils, "_executable_cache", {})
     mock_which = mock.Mock(return_value="/fake/path/to/git")
     monkeypatch.setattr(shutil, "which", mock_which)
 
     # First call, should call `which`
-    path = alt_text_utils.find_executable("git")
+    path = utils.find_executable("git")
     assert path == "/fake/path/to/git"
     mock_which.assert_called_once_with("git")
 
     # Second call, should use cache and not call `which` again
-    path2 = alt_text_utils.find_executable("git")
+    path2 = utils.find_executable("git")
     assert path2 == "/fake/path/to/git"
     mock_which.assert_called_once()
 
 
 def test_get_files_no_dir() -> None:
     """Test when no directory is provided."""
-    result = alt_text_utils.get_files()
+    result = utils.get_files()
     assert isinstance(result, tuple)
     assert not result  # Empty tuple since no directory was given
 
@@ -1380,7 +1351,7 @@ def test_get_files_specific_dir(
 
     # Get files based on the file extensions in the file paths
     filetypes_to_match = list({p.suffix for p in map(Path, expected_files)})
-    result = alt_text_utils.get_files(
+    result = utils.get_files(
         dir_to_search=tmp_path,
         filetypes_to_match=filetypes_to_match,
         use_git_ignore=False,
@@ -1406,7 +1377,7 @@ def test_get_files_gitignore(tmp_path: Path) -> None:
         repo.index.commit("Initial commit")
 
         # Test getting files with gitignore
-        result = alt_text_utils.get_files(dir_to_search=tmp_path)
+        result = utils.get_files(dir_to_search=tmp_path)
         assert len(result) == 1
         assert result[0] == md_file
     except git.GitCommandError:
@@ -1436,7 +1407,7 @@ def test_get_files_ignore_dirs(tmp_path: Path) -> None:
         file.write_text("test content")
 
     # Get files, ignoring 'templates' directories
-    result = alt_text_utils.get_files(
+    result = utils.get_files(
         dir_to_search=tmp_path,
         filetypes_to_match=(".md",),
         ignore_dirs=["templates"],
@@ -1459,7 +1430,7 @@ def test_split_yaml_invalid_format(tmp_path: Path) -> None:
         "Invalid content without proper frontmatter", encoding="utf-8"
     )
 
-    metadata, content = alt_text_utils.split_yaml(file_path)
+    metadata, content = utils.split_yaml(file_path)
     assert metadata == {}
     assert content == ""
 
@@ -1469,7 +1440,7 @@ def test_split_yaml_empty_frontmatter(tmp_path: Path) -> None:
     file_path = tmp_path / "empty.md"
     file_path.write_text("---\n---\nContent", encoding="utf-8")
 
-    metadata, content = alt_text_utils.split_yaml(file_path)
+    metadata, content = utils.split_yaml(file_path)
     assert metadata == {}
     assert content == "\nContent"
 
@@ -1482,6 +1453,6 @@ def test_split_yaml_malformed_yaml(tmp_path: Path) -> None:
     )
 
     # Expect split_yaml to return empty metadata and content for malformed files
-    metadata, content = alt_text_utils.split_yaml(file_path, verbose=True)
+    metadata, content = utils.split_yaml(file_path, verbose=True)
     assert metadata == {}
     assert content == ""

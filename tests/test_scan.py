@@ -1,17 +1,9 @@
-import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 
-sys.path.append(str(Path(__file__).parent.parent))
-
-import typing
-
-if typing.TYPE_CHECKING:
-    from .. import scan_for_empty_alt
-else:
-    import scan_for_empty_alt
+from alt_text_llm import scan
 
 
 @pytest.mark.parametrize(
@@ -26,7 +18,7 @@ else:
     ],
 )
 def test_is_alt_meaningful(alt: str | None, expected: bool) -> None:
-    assert scan_for_empty_alt._is_alt_meaningful(alt) is expected
+    assert scan._is_alt_meaningful(alt) is expected
 
 
 def _write_md(tmp_path: Path, content: str, name: str = "test.md") -> Path:
@@ -44,7 +36,7 @@ Paragraph one.
 Paragraph two.
 """
     _write_md(tmp_path, md_content)
-    queue = scan_for_empty_alt.build_queue(tmp_path)
+    queue = scan.build_queue(tmp_path)
     assert len(queue) == 1
     item = queue[0]
     assert item.asset_path == "img/foo.png"
@@ -60,7 +52,7 @@ Intro.
 <img src=\"assets/pic.jpg\">
 """
     _write_md(tmp_path, md_content, "html.md")
-    queue = scan_for_empty_alt.build_queue(tmp_path)
+    queue = scan.build_queue(tmp_path)
     assert len(queue) == 1, f"{queue} doesn't have the right elements"
     assert queue[0].asset_path == "assets/pic.jpg"
 
@@ -68,7 +60,7 @@ Intro.
 def test_build_queue_ignores_good_alt(tmp_path: Path) -> None:
     md_content = "![](foo.png)\n\n![Good alt](bar.png)"
     _write_md(tmp_path, md_content)
-    queue = scan_for_empty_alt.build_queue(tmp_path)
+    queue = scan.build_queue(tmp_path)
 
     # only the empty alt should be queued
     assert len(queue) == 1, f"{queue} doesn't have the right elements"
@@ -102,7 +94,7 @@ def test_queue_expected_paths(
     file_path = tmp_path / "edge.md"
     file_path.write_text(content, encoding="utf-8")
 
-    queue = scan_for_empty_alt.build_queue(tmp_path)
+    queue = scan.build_queue(tmp_path)
     assert sorted(item.asset_path for item in queue) == sorted(expected_paths)
 
 
@@ -122,7 +114,7 @@ def test_html_img_line_number_fallback(tmp_path: Path) -> None:
     )
     _write_md(tmp_path, md_content, "fallback.md")
 
-    queue = scan_for_empty_alt.build_queue(tmp_path)
+    queue = scan.build_queue(tmp_path)
     assert len(queue) == 1
 
     item = queue[0]
@@ -154,7 +146,7 @@ def test_html_img_line_number_with_frontmatter(tmp_path: Path) -> None:
         if "<img" in ln
     )
 
-    queue = scan_for_empty_alt.build_queue(tmp_path)
+    queue = scan.build_queue(tmp_path)
     assert len(queue) == 1
     assert queue[0].line_number == img_line_no
 
@@ -188,7 +180,7 @@ def test_get_line_number_raises_error_when_asset_not_found(
         ValueError,
         match="Could not find asset '\\(nonexistent.png\\)' in markdown file",
     ):
-        scan_for_empty_alt._get_line_number(token, lines, "(nonexistent.png)")
+        scan._get_line_number(token, lines, "(nonexistent.png)")
 
 
 def test_html_img_error_when_src_not_in_content(tmp_path: Path) -> None:
@@ -208,7 +200,7 @@ def test_html_img_error_when_src_not_in_content(tmp_path: Path) -> None:
     _write_md(tmp_path, md_content, "html_test.md")
 
     # This should work normally
-    queue = scan_for_empty_alt.build_queue(tmp_path)
+    queue = scan.build_queue(tmp_path)
     assert len(queue) == 1
     assert queue[0].asset_path == "findable.jpg"
     assert queue[0].line_number == 6  # Line where <img> appears

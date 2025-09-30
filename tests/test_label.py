@@ -1,8 +1,7 @@
-"""Tests for label_alt_text.py module."""
+"""Tests for label.py module."""
 
 import json
 import subprocess
-import sys
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -11,10 +10,7 @@ import pytest
 from rich import console
 from rich.console import Console
 
-sys.path.append(str(Path(__file__).parent.parent))
-
-from .. import alt_text_utils, label_alt_text, scan_for_empty_alt
-from . import utils as test_utils
+from alt_text_llm import label, scan, utils
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -23,9 +19,9 @@ from . import utils as test_utils
 
 def create_alt(
     idx: int, *, final_alt: str | None = None
-) -> alt_text_utils.AltGenerationResult:
+) -> utils.AltGenerationResult:
     """Factory for AltGenerationResult with deterministic dummy fields."""
-    return alt_text_utils.AltGenerationResult(
+    return utils.AltGenerationResult(
         markdown_file=f"test{idx}.md",
         asset_path=f"image{idx}.jpg",
         suggested_alt=f"suggestion {idx}",
@@ -37,21 +33,10 @@ def create_alt(
 
 
 @pytest.fixture
-def base_queue_item(temp_dir: Path) -> scan_for_empty_alt.QueueItem:
-    """Provides a base QueueItem for testing."""
-    return scan_for_empty_alt.QueueItem(
-        markdown_file=str(temp_dir / "test.md"),
-        asset_path="image.jpg",
-        line_number=5,
-        context_snippet="This is a test image context.",
-    )
-
-
-@pytest.fixture
-def test_suggestions() -> list[alt_text_utils.AltGenerationResult]:
+def test_suggestions() -> list[utils.AltGenerationResult]:
     """Test suggestions for error handling tests."""
     return [
-        alt_text_utils.AltGenerationResult(
+        utils.AltGenerationResult(
             markdown_file="test1.md",
             asset_path="image1.jpg",
             suggested_alt="First",
@@ -59,7 +44,7 @@ def test_suggestions() -> list[alt_text_utils.AltGenerationResult]:
             context_snippet="ctx1",
             line_number=1,
         ),
-        alt_text_utils.AltGenerationResult(
+        utils.AltGenerationResult(
             markdown_file="test2.md",
             asset_path="image2.jpg",
             suggested_alt="Second",
@@ -84,14 +69,14 @@ def _setup_error_mocks(error_type, error_on_item: str):
     with (
         patch("sys.stdout.isatty", return_value=False),
         patch.object(
-            alt_text_utils,
+            utils,
             "download_asset",
             side_effect=mock_download_asset,
         ),
-        patch.object(label_alt_text.DisplayManager, "show_error"),
-        patch.object(label_alt_text.DisplayManager, "show_context"),
-        patch.object(label_alt_text.DisplayManager, "show_rule"),
-        patch.object(label_alt_text.DisplayManager, "show_image"),
+        patch.object(label.DisplayManager, "show_error"),
+        patch.object(label.DisplayManager, "show_context"),
+        patch.object(label.DisplayManager, "show_rule"),
+        patch.object(label.DisplayManager, "show_image"),
     ):
         yield
 
@@ -116,20 +101,20 @@ class TestDisplayManager:
     """Test the DisplayManager class."""
 
     @pytest.fixture
-    def display_manager(self) -> label_alt_text.DisplayManager:
+    def display_manager(self) -> label.DisplayManager:
         """Create a DisplayManager with mocked console for testing."""
         richConsole = console.Console(file=Mock())
-        return label_alt_text.DisplayManager(richConsole)
+        return label.DisplayManager(richConsole)
 
     def test_display_manager_creation(self) -> None:
         richConsole = console.Console()
-        display = label_alt_text.DisplayManager(richConsole)
+        display = label.DisplayManager(richConsole)
         assert display.console is richConsole
 
     def test_show_context(
         self,
-        display_manager: label_alt_text.DisplayManager,
-        base_queue_item: scan_for_empty_alt.QueueItem,
+        display_manager: label.DisplayManager,
+        base_queue_item: scan.QueueItem,
     ) -> None:
         # Create the markdown file that the queue item references
         markdown_file = Path(base_queue_item.markdown_file)
@@ -141,7 +126,7 @@ class TestDisplayManager:
         display_manager.show_context(base_queue_item)
 
     def test_show_image_not_tty(
-        self, display_manager: label_alt_text.DisplayManager, temp_dir: Path
+        self, display_manager: label.DisplayManager, temp_dir: Path
     ) -> None:
         test_image = temp_dir / "test.jpg"
         test_utils.create_test_image(test_image, "100x100")
@@ -158,7 +143,7 @@ class TestDisplayManager:
             )
 
     def test_show_image_success(
-        self, display_manager: label_alt_text.DisplayManager, temp_dir: Path
+        self, display_manager: label.DisplayManager, temp_dir: Path
     ) -> None:
         test_image = temp_dir / "test.jpg"
         test_utils.create_test_image(test_image, "100x100")
@@ -175,7 +160,7 @@ class TestDisplayManager:
             )
 
     def test_show_image_subprocess_error(
-        self, display_manager: label_alt_text.DisplayManager, temp_dir: Path
+        self, display_manager: label.DisplayManager, temp_dir: Path
     ) -> None:
         test_image = temp_dir / "test.jpg"
         test_utils.create_test_image(test_image, "100x100")
@@ -191,7 +176,7 @@ class TestDisplayManager:
                 display_manager.show_image(test_image)
 
     def test_show_image_tmux_error(
-        self, display_manager: label_alt_text.DisplayManager, temp_dir: Path
+        self, display_manager: label.DisplayManager, temp_dir: Path
     ) -> None:
         test_image = temp_dir / "test.jpg"
         test_utils.create_test_image(test_image, "100x100")
@@ -203,13 +188,13 @@ class TestDisplayManager:
 
 def test_label_suggestions_handles_file_errors(
     temp_dir: Path,
-    test_suggestions: list[alt_text_utils.AltGenerationResult],
+    test_suggestions: list[utils.AltGenerationResult],
 ) -> None:
     """Test that individual file errors are handled gracefully and processing continues."""
     output_file = temp_dir / "test_output.json"
 
     with _setup_error_mocks(FileNotFoundError, "image2.jpg"):
-        result_count = label_alt_text.label_suggestions(
+        result_count = label.label_suggestions(
             test_suggestions, Mock(), output_file, append_mode=False
         )
 
@@ -226,7 +211,7 @@ def test_label_suggestions_handles_file_errors(
 )
 def test_label_suggestions_saves_on_exceptions(
     temp_dir: Path,
-    test_suggestions: list[alt_text_utils.AltGenerationResult],
+    test_suggestions: list[utils.AltGenerationResult],
     error_type,
     error_on_item: str,
     expected_saved_count: int,
@@ -236,7 +221,7 @@ def test_label_suggestions_saves_on_exceptions(
 
     with _setup_error_mocks(error_type, error_on_item):
         with pytest.raises(error_type):
-            label_alt_text.label_suggestions(
+            label.label_suggestions(
                 test_suggestions, Mock(), output_file, append_mode=False
             )
 
@@ -264,9 +249,9 @@ def test_label_from_suggestions_file_loads_and_filters_data(
 
     suggestions_file.write_text(json.dumps(suggestions_data), encoding="utf-8")
 
-    with patch.object(label_alt_text, "label_suggestions") as mock_label:
+    with patch.object(label, "label_suggestions") as mock_label:
         mock_label.return_value = 1
-        label_alt_text.label_from_suggestions_file(
+        label.label_from_suggestions_file(
             suggestions_file, output_file, skip_existing=False
         )
 
@@ -298,7 +283,7 @@ def test_label_from_suggestions_file_error_handling(
         suggestions_file.write_text(file_content, encoding="utf-8")
 
     with pytest.raises(error):
-        label_alt_text.label_from_suggestions_file(
+        label.label_from_suggestions_file(
             suggestions_file, temp_dir / "output.json", skip_existing=False
         )
 
@@ -307,18 +292,18 @@ def test_label_from_suggestions_file_error_handling(
 def test_prompt_for_edit_undo_command(user_input: str) -> None:
     """prompt_for_edit returns sentinel on various undo inputs."""
     console = Console()
-    display = label_alt_text.DisplayManager(console)
+    display = label.DisplayManager(console)
 
     with patch("builtins.input", return_value=user_input):
         result = display.prompt_for_edit("test suggestion")
-        assert result == label_alt_text.UNDO_REQUESTED
+        assert result == label.UNDO_REQUESTED
 
 
 def test_labeling_session() -> None:
     """Test the LabelingSession helper class."""
     suggestions = [create_alt(1), create_alt(2)]
 
-    session = label_alt_text.LabelingSession(suggestions)
+    session = label.LabelingSession(suggestions)
 
     # Initial state
     assert not session.is_complete()
@@ -361,7 +346,7 @@ def test_labeling_session() -> None:
         (
             [
                 "accepted 1",
-                label_alt_text.UNDO_REQUESTED,
+                label.UNDO_REQUESTED,
                 "modified 1",
                 "accepted 2",
             ],
@@ -369,7 +354,7 @@ def test_labeling_session() -> None:
         ),
         # Undo at beginning then accept
         (
-            [label_alt_text.UNDO_REQUESTED, "accepted"],
+            [label.UNDO_REQUESTED, "accepted"],
             ["accepted"],
         ),
     ],
@@ -400,11 +385,11 @@ def test_label_suggestions_sequences(
         return create_alt(suggestion_data.line_number, final_alt=final)
 
     with patch.object(
-        label_alt_text,
+        label,
         "_process_single_suggestion_for_labeling",
         side_effect=mock_process_single_suggestion,
     ):
-        label_alt_text.label_suggestions(
+        label.label_suggestions(
             suggestions, console, output_path, append_mode=True
         )
 
@@ -426,7 +411,7 @@ def test_prefill_after_undo(temp_dir: Path) -> None:
     # Sequence: accept → undo → modify → accept next
     sequence: list[str] = [
         "accepted first",
-        label_alt_text.UNDO_REQUESTED,
+        label.UNDO_REQUESTED,
         "modified first",
         "accepted second",
     ]
@@ -450,11 +435,11 @@ def test_prefill_after_undo(temp_dir: Path) -> None:
         return create_alt(suggestion_data.line_number, final_alt=final)
 
     with patch.object(
-        label_alt_text,
+        label,
         "_process_single_suggestion_for_labeling",
         side_effect=mock_process_single_suggestion,
     ):
-        label_alt_text.label_suggestions(
+        label.label_suggestions(
             suggestions, console, output_path, append_mode=False
         )
 

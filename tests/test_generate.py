@@ -1,14 +1,11 @@
-"""Tests for generate_alt_text.py module."""
+"""Tests for generate.py module."""
 
-import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
 
-sys.path.append(str(Path(__file__).parent.parent))
-
-from .. import alt_text_utils, generate_alt_text, scan_for_empty_alt
+from alt_text_llm import generate, scan, utils
 
 
 @pytest.mark.parametrize(
@@ -27,7 +24,7 @@ def test_estimate_cost_calculation_parametrized(
     avg_output_tokens: int,
 ) -> None:
     # Retrieve costs from the actual MODEL_COSTS constant
-    model_costs = generate_alt_text.MODEL_COSTS[model]
+    model_costs = generate.MODEL_COSTS[model]
     input_cost_per_1k = model_costs["input"]
     output_cost_per_1k = model_costs["output"]
 
@@ -39,7 +36,7 @@ def test_estimate_cost_calculation_parametrized(
     ) * output_cost_per_1k
     expected_total = expected_input + expected_output
 
-    result = generate_alt_text.estimate_cost(
+    result = generate.estimate_cost(
         model, queue_count, avg_prompt_tokens, avg_output_tokens
     )
 
@@ -61,7 +58,7 @@ def test_estimate_cost_format_consistency(
     model: str, queue_count: int
 ) -> None:
     """Test that cost estimation returns consistently formatted results."""
-    result = generate_alt_text.estimate_cost(model, queue_count)
+    result = generate.estimate_cost(model, queue_count)
 
     # Check format consistency
     assert result.startswith("Estimated cost: $")
@@ -72,7 +69,7 @@ def test_estimate_cost_format_consistency(
 
 def test_estimate_cost_invalid_model() -> None:
     """Test cost estimation with invalid model returns informative message."""
-    result = generate_alt_text.estimate_cost("invalid-model", 10)
+    result = generate.estimate_cost("invalid-model", 10)
 
     assert result.startswith("Can't estimate cost for unknown model")
 
@@ -91,7 +88,7 @@ def test_run_llm_success(temp_dir: Path) -> None:
     mock_result.stderr = ""
 
     with patch("subprocess.run", return_value=mock_result) as mock_run:
-        result = generate_alt_text._run_llm(attachment, prompt, model, timeout)
+        result = generate._run_llm(attachment, prompt, model, timeout)
 
         assert result == "Generated alt text"
         mock_run.assert_called_once()
@@ -108,13 +105,13 @@ def test_filter_existing_captions_filters_items(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue_items = [
-        scan_for_empty_alt.QueueItem(
+        scan.QueueItem(
             markdown_file="test1.md",
             asset_path="image1.jpg",
             line_number=1,
             context_snippet="context1",
         ),
-        scan_for_empty_alt.QueueItem(
+        scan.QueueItem(
             markdown_file="test2.md",
             asset_path="image2.jpg",
             line_number=2,
@@ -126,7 +123,7 @@ def test_filter_existing_captions_filters_items(
         return {"image1.jpg"}
 
     monkeypatch.setattr(
-        alt_text_utils,
+        utils,
         "load_existing_captions",
         fake_load_existing_captions,
     )
@@ -134,7 +131,7 @@ def test_filter_existing_captions_filters_items(
     console_mock = Mock()
     console_mock.print = Mock()
 
-    filtered = generate_alt_text.filter_existing_captions(
+    filtered = generate.filter_existing_captions(
         queue_items,
         [Path("captions.json")],
         console_mock,
@@ -160,10 +157,10 @@ def test_run_llm_failure(temp_dir: Path) -> None:
 
     with patch("subprocess.run", return_value=mock_result):
         with pytest.raises(
-            alt_text_utils.AltGenerationError,
+            utils.AltGenerationError,
             match="Caption generation failed",
         ):
-            generate_alt_text._run_llm(attachment, prompt, model, timeout)
+            generate._run_llm(attachment, prompt, model, timeout)
 
 
 def test_run_llm_empty_output(temp_dir: Path) -> None:
@@ -181,10 +178,10 @@ def test_run_llm_empty_output(temp_dir: Path) -> None:
 
     with patch("subprocess.run", return_value=mock_result):
         with pytest.raises(
-            alt_text_utils.AltGenerationError,
+            utils.AltGenerationError,
             match="LLM returned empty caption",
         ):
-            generate_alt_text._run_llm(attachment, prompt, model, timeout)
+            generate._run_llm(attachment, prompt, model, timeout)
 
 
 @pytest.mark.asyncio
@@ -192,13 +189,13 @@ async def test_async_generate_suggestions(
     monkeypatch: pytest.MonkeyPatch, temp_dir: Path
 ) -> None:
     queue_items = [
-        scan_for_empty_alt.QueueItem(
+        scan.QueueItem(
             markdown_file="test1.md",
             asset_path="image1.jpg",
             line_number=1,
             context_snippet="context1",
         ),
-        scan_for_empty_alt.QueueItem(
+        scan.QueueItem(
             markdown_file="test2.md",
             asset_path="image2.jpg",
             line_number=2,
@@ -207,7 +204,7 @@ async def test_async_generate_suggestions(
     ]
 
     def fake_download_asset(
-        queue_item: scan_for_empty_alt.QueueItem, workspace: Path
+        queue_item: scan.QueueItem, workspace: Path
     ) -> Path:
         asset_filename = Path(queue_item.asset_path).name or "asset"
         target_path = workspace / asset_filename
@@ -215,7 +212,7 @@ async def test_async_generate_suggestions(
         return target_path
 
     monkeypatch.setattr(
-        alt_text_utils,
+        utils,
         "download_asset",
         fake_download_asset,
     )
@@ -225,10 +222,10 @@ async def test_async_generate_suggestions(
     ) -> str:
         return f"{attachment.name}-caption"
 
-    monkeypatch.setattr(generate_alt_text, "_run_llm", fake_run_llm)
+    monkeypatch.setattr(generate, "_run_llm", fake_run_llm)
 
     def fake_generate_article_context(
-        queue_item: scan_for_empty_alt.QueueItem,
+        queue_item: scan.QueueItem,
         max_before: int | None = None,
         max_after: int = 2,
         trim_frontmatter: bool = False,
@@ -236,12 +233,12 @@ async def test_async_generate_suggestions(
         return queue_item.context_snippet
 
     monkeypatch.setattr(
-        alt_text_utils,
+        utils,
         "generate_article_context",
         fake_generate_article_context,
     )
 
-    options = generate_alt_text.GenerateAltTextOptions(
+    options = generate.GenerateAltTextOptions(
         root=temp_dir,
         model="test-model",
         max_chars=50,
@@ -250,9 +247,7 @@ async def test_async_generate_suggestions(
         skip_existing=False,
     )
 
-    results = await generate_alt_text.async_generate_suggestions(
-        queue_items, options
-    )
+    results = await generate.async_generate_suggestions(queue_items, options)
 
     assert len(results) == len(queue_items)
     result_asset_paths = {result.asset_path for result in results}

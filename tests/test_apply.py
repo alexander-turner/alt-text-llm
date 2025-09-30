@@ -1,20 +1,12 @@
 """Tests for apply module."""
 
 import json
-import tempfile
 from pathlib import Path
 
 import pytest
 from rich.console import Console
 
 from alt_text_llm import apply, utils
-
-
-@pytest.fixture
-def temp_dir():
-    """Create a temporary directory for tests."""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        yield Path(temp_dir)
 
 
 @pytest.fixture
@@ -83,7 +75,7 @@ def test_apply_markdown_image_alt_empty() -> None:
         line, "path/to/image.png", "new alt text"
     )
 
-    assert old_alt == ""
+    assert old_alt is None
     assert new_line == "This is ![new alt text](path/to/image.png) in text"
 
 
