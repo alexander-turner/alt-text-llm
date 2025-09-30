@@ -125,7 +125,7 @@ class DisplayManager:
             readline.parse_and_bind("set editing-mode vi")
         readline.set_startup_hook(lambda: readline.insert_text(suggestion))
         self.console.print(
-            "\n[bold blue]Edit alt text (or press Enter to accept, 'undo' to go back):[/bold blue]"
+            "\n[bold blue]Edit alt text (or press Enter to accept, 'undo' to go back). Exiting will save your progress.[/bold blue]"
         )
         result = input("> ")
         readline.set_startup_hook(None)
