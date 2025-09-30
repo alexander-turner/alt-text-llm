@@ -148,6 +148,100 @@ def _display_unused_entries(
         console.print(f"[dim]  {markdown_file}: {asset_basename}[/dim]")
 
 
+def _read_file_lines(md_path: Path) -> tuple[str, list[str]]:
+    """
+    Read a file and split it into lines.
+
+    Args:
+        md_path: Path to the markdown file
+
+    Returns:
+        Tuple of (original text, list of lines)
+    """
+    source_text = md_path.read_text(encoding="utf-8")
+    lines = source_text.splitlines()
+    return source_text, lines
+
+
+def _validate_line_number(
+    target_line: int, total_lines: int, md_path: Path, console: Console
+) -> bool:
+    """
+    Validate that a line number is within valid range.
+
+    Args:
+        target_line: The line number to validate (1-based)
+        total_lines: Total number of lines in the file
+        md_path: Path to the markdown file (for error message)
+        console: Rich console for output
+
+    Returns:
+        True if valid, False otherwise
+    """
+    if target_line < 1 or target_line > total_lines:
+        console.print(
+            f"[yellow]Warning: Line {target_line} out of range for {md_path}[/yellow]"
+        )
+        return False
+    return True
+
+
+def _try_all_image_formats(
+    line: str, asset_path: str, new_alt: str
+) -> tuple[str, str | None]:
+    """
+    Try applying alt text to all supported image formats.
+
+    Args:
+        line: The line to modify
+        asset_path: The asset path to match
+        new_alt: The new alt text to apply
+
+    Returns:
+        Tuple of (modified line, old alt text or None)
+    """
+    # Try markdown image first
+    modified_line, old_alt = _apply_markdown_image_alt(
+        line, asset_path, new_alt
+    )
+
+    # If no change, try wikilink image
+    if modified_line == line:
+        modified_line, old_alt = _apply_wikilink_image_alt(
+            line, asset_path, new_alt
+        )
+
+    # If no change, try HTML image
+    if modified_line == line:
+        modified_line, old_alt = _apply_html_image_alt(
+            line, asset_path, new_alt
+        )
+
+    return modified_line, old_alt
+
+
+def _write_modified_lines(
+    md_path: Path, lines: list[str], original_text: str, dry_run: bool
+) -> None:
+    """
+    Write modified lines back to file.
+
+    Args:
+        md_path: Path to the markdown file
+        lines: Modified lines to write
+        original_text: Original file text (to preserve trailing newline)
+        dry_run: If True, don't actually write to file
+    """
+    if dry_run:
+        return
+
+    new_content = "\n".join(lines)
+    # Preserve trailing newline if original had one
+    if original_text.endswith("\n"):
+        new_content += "\n"
+    md_path.write_text(new_content, encoding="utf-8")
+
+
 def _apply_caption_to_file(
     md_path: Path,
     caption_item: utils.AltGenerationResult,
@@ -168,38 +262,20 @@ def _apply_caption_to_file(
     """
     assert caption_item.final_alt is not None, "final_alt must be set"
 
-    source_text = md_path.read_text(encoding="utf-8")
-    lines = source_text.splitlines()
+    source_text, lines = _read_file_lines(md_path)
 
     target_line = caption_item.line_number
 
-    # Validate line number
-    if target_line < 1 or target_line > len(lines):
-        console.print(
-            f"[yellow]Warning: Line {target_line} out of range for {md_path}[/yellow]"
-        )
+    if not _validate_line_number(target_line, len(lines), md_path, console):
         return None
 
     # Get the target line (convert to 0-based index)
     line_idx = target_line - 1
     original_line = lines[line_idx]
 
-    # Try markdown image first
-    modified_line, old_alt = _apply_markdown_image_alt(
+    modified_line, old_alt = _try_all_image_formats(
         original_line, caption_item.asset_path, caption_item.final_alt
     )
-
-    # If no change, try wikilink image
-    if modified_line == original_line:
-        modified_line, old_alt = _apply_wikilink_image_alt(
-            original_line, caption_item.asset_path, caption_item.final_alt
-        )
-
-    # If no change, try HTML image
-    if modified_line == original_line:
-        modified_line, old_alt = _apply_html_image_alt(
-            original_line, caption_item.asset_path, caption_item.final_alt
-        )
 
     # Check if anything changed
     if modified_line == original_line:
@@ -211,13 +287,7 @@ def _apply_caption_to_file(
     # Apply the change
     lines[line_idx] = modified_line
 
-    if not dry_run:
-        # Write back to file
-        new_content = "\n".join(lines)
-        # Preserve trailing newline if original had one
-        if source_text.endswith("\n"):
-            new_content += "\n"
-        md_path.write_text(new_content, encoding="utf-8")
+    _write_modified_lines(md_path, lines, source_text, dry_run)
 
     return (old_alt, caption_item.final_alt)
 
