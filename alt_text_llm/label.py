@@ -138,7 +138,8 @@ class DisplayManager:
 
     def show_rule(self, title: str) -> None:
         """Display a separator rule."""
-        self.console.rule(title)
+        self.console.print()
+        self.console.rule(f"[bold]Asset: {title}[/bold]")
 
     def show_error(self, error_message: str) -> None:
         """Display error message."""
