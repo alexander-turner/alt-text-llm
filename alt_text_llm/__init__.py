@@ -2,7 +2,7 @@
 
 __version__ = "0.1.0"
 
-from alt_text_llm import apply, generate, label, main, scan, utils
+from . import apply, generate, label, main, scan, utils
 
 __all__ = [
     "apply",
