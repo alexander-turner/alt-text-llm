@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from alt_text_llm import generate, label, scan, utils
+from alt_text_llm import apply, generate, label, scan, utils
 
 _JSON_INDENT: int = 2
 
@@ -19,6 +19,7 @@ class Command(StrEnum):
     SCAN = "scan"
     GENERATE = "generate"
     LABEL = "label"
+    APPLY = "apply"
 
 
 def _scan_command(args: argparse.Namespace) -> None:
@@ -95,13 +96,6 @@ def _generate_command(args: argparse.Namespace) -> None:
         console.print(
             f"[green]Saved {len(suggestions)} suggestions to {suggestions_path}[/green]"
         )
-
-
-def _label_command(args: argparse.Namespace) -> None:
-    """Execute the label sub-command."""
-    label.label_from_suggestions_file(
-        args.suggestions_file, args.output, args.skip_existing, args.vi_mode
-    )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -214,6 +208,25 @@ def _parse_args() -> argparse.Namespace:
         help="Enable vi keybindings for text editing (default: disabled)",
     )
 
+    # ---------------------------------------------------------------------------
+    # apply sub-command
+    # ---------------------------------------------------------------------------
+    apply_parser = subparsers.add_parser(
+        Command.APPLY, help="Apply labeled captions to markdown files"
+    )
+    apply_parser.add_argument(
+        "--captions-file",
+        type=Path,
+        default=git_root / "scripts" / "asset_captions.json",
+        help="Path to the captions JSON file with final_alt populated",
+    )
+    apply_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Show what would be changed without modifying files",
+    )
+
     return parser.parse_args()
 
 
@@ -226,7 +239,14 @@ def main() -> None:
     elif args.command == Command.GENERATE:
         _generate_command(args)
     elif args.command == Command.LABEL:
-        _label_command(args)
+        label.label_from_suggestions_file(
+            args.suggestions_file,
+            args.output,
+            args.skip_existing,
+            args.vi_mode,
+        )
+    elif args.command == Command.APPLY:
+        apply.apply_from_captions_file(args.captions_file, args.dry_run)
     else:
         raise ValueError(f"Invalid command: {args.command}")
 
