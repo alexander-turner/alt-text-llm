@@ -22,7 +22,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "mypy", "types-requests"]
+dev = ["pytest", "mypy", "types-requests", "pytest-asyncio"]
+
+[tool.pytest.ini_options]
+addopts = "--cov=alt_text_llm --cov-report=html -n auto"
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "ignore:rich is experimental/alpha:tqdm.std.TqdmExperimentalWarning",
+]
 
 [project.scripts]
 alt-text-llm = "alt_text_llm.main:main"

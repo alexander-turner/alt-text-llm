@@ -12,6 +12,7 @@ import pytest
 import requests
 
 from alt_text_llm import scan, utils
+from tests.test_helpers import create_markdown_file, create_test_image
 
 
 @pytest.mark.parametrize(
@@ -80,7 +81,7 @@ Para 8: Eighth paragraph after image
 
 Para 9: Ninth paragraph (should not appear)"""
 
-        return test_utils.create_markdown_file(
+        return create_markdown_file(
             temp_dir / "test_context.md",
             content=content,
         )
@@ -122,7 +123,7 @@ Para 9: Ninth paragraph (should not appear)"""
         frontmatter = {"title": "Test Article", "date": "2023-01-01"}
         content = "Para 1\n\nPara 2 with image\n\nPara 3"
 
-        markdown_file = test_utils.create_markdown_file(
+        markdown_file = create_markdown_file(
             temp_dir / "test_frontmatter.md",
             frontmatter=frontmatter,
             content=content,
@@ -156,7 +157,7 @@ Para 9: Ninth paragraph (should not appear)"""
         """Test that files without frontmatter work correctly."""
         content = "Para 1\n\nPara 2 with image\n\nPara 3"
 
-        markdown_file = test_utils.create_markdown_file(
+        markdown_file = create_markdown_file(
             temp_dir / "test_no_frontmatter.md",
             frontmatter=None,
             content=content,
@@ -183,7 +184,7 @@ Para 9: Ninth paragraph (should not appear)"""
         frontmatter = {"title": "Test Article"}
         content = "Para 1\n\nTarget para\n\nPara 3"
 
-        markdown_file = test_utils.create_markdown_file(
+        markdown_file = create_markdown_file(
             temp_dir / "test_line_adjustment.md",
             frontmatter=frontmatter,
             content=content,
@@ -223,7 +224,7 @@ Para 9: Ninth paragraph (should not appear)"""
         }
         content = "Para 1: First paragraph\n\nPara 2: Target paragraph\n\nPara 3: Third paragraph"
 
-        markdown_file = test_utils.create_markdown_file(
+        markdown_file = create_markdown_file(
             temp_dir / "test_trim_true.md",
             frontmatter=frontmatter,
             content=content,
@@ -269,7 +270,7 @@ Para 9: Ninth paragraph (should not appear)"""
         frontmatter = {"title": "Test Article", "date": "2023-01-01"}
         content = "Para 1: First paragraph\n\nPara 2: Target paragraph\n\nPara 3: Third paragraph"
 
-        markdown_file = test_utils.create_markdown_file(
+        markdown_file = create_markdown_file(
             temp_dir / "test_trim_false.md",
             frontmatter=frontmatter,
             content=content,
@@ -309,7 +310,7 @@ Para 9: Ninth paragraph (should not appear)"""
         """Test that trim_frontmatter works correctly with files that have no frontmatter."""
         content = "Para 1: First paragraph\n\nPara 2: Target paragraph\n\nPara 3: Third paragraph"
 
-        markdown_file = test_utils.create_markdown_file(
+        markdown_file = create_markdown_file(
             temp_dir / "test_no_frontmatter_trim.md",
             frontmatter=None,
             content=content,
@@ -346,7 +347,7 @@ Para 9: Ninth paragraph (should not appear)"""
         frontmatter = {"title": "Test Article", "author": "Test Author"}
         content = "Para 1\n\nPara 2\n\nTarget para\n\nPara 4"
 
-        markdown_file = test_utils.create_markdown_file(
+        markdown_file = create_markdown_file(
             temp_dir / "test_line_adjustment_trim.md",
             frontmatter=frontmatter,
             content=content,
@@ -387,7 +388,7 @@ Para 9: Ninth paragraph (should not appear)"""
         frontmatter = {"title": "Default Test"}
         content = "Content paragraph"
 
-        markdown_file = test_utils.create_markdown_file(
+        markdown_file = create_markdown_file(
             temp_dir / "test_default_trim.md",
             frontmatter=frontmatter,
             content=content,
@@ -439,9 +440,7 @@ def test_edge_positions(
 ) -> None:
     """Test article context generation at various target positions."""
     content = "Para 1\n\nPara 2\n\nPara 3\n\nPara 4\n\nPara 5\n\nPara 6"
-    test_md = test_utils.create_markdown_file(
-        temp_dir / "test_edge.md", content=content
-    )
+    test_md = create_markdown_file(temp_dir / "test_edge.md", content=content)
 
     queue_item = scan.QueueItem(
         markdown_file=str(test_md),
@@ -486,7 +485,7 @@ Para 10: Should appear
 
 Para 11: Should not appear"""
 
-        return test_utils.create_markdown_file(
+        return create_markdown_file(
             temp_dir / "test_prompt.md", content=content
         )
 
@@ -562,7 +561,7 @@ class TestConvertAvifToPng:
     def test_non_avif_passthrough(self, temp_dir: Path) -> None:
         """Test that non-AVIF files are passed through unchanged."""
         test_file = temp_dir / "test.jpg"
-        test_utils.create_test_image(test_file, "100x100")
+        create_test_image(test_file, "100x100")
 
         result = utils._convert_avif_to_png(test_file, temp_dir)
         assert result == test_file
@@ -571,7 +570,7 @@ class TestConvertAvifToPng:
         avif_file = temp_dir / "test.avif"
         png_file = temp_dir / "test.png"
 
-        test_utils.create_test_image(avif_file, "100x100")
+        create_test_image(avif_file, "100x100")
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = None
@@ -616,7 +615,7 @@ class TestConvertGifToMp4:
     def test_non_gif_raises_error(self, temp_dir: Path) -> None:
         """Test that non-GIF files raise ValueError."""
         test_file = temp_dir / "test.jpg"
-        test_utils.create_test_image(test_file, "100x100")
+        create_test_image(test_file, "100x100")
 
         with pytest.raises(ValueError, match="Unsupported file type"):
             utils._convert_gif_to_mp4(test_file, temp_dir)
@@ -625,7 +624,7 @@ class TestConvertGifToMp4:
         """Test successful GIF to MP4 conversion."""
         gif_file = temp_dir / "test.gif"
         mp4_file = temp_dir / "test.mp4"
-        test_utils.create_test_image(gif_file, "100x100")
+        create_test_image(gif_file, "100x100")
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = None
@@ -664,7 +663,7 @@ class TestConvertGifToMp4:
 class TestConvertAssetForLlm:
     """Test the asset conversion router function."""
 
-    @patch("scripts.utils._convert_avif_to_png")
+    @patch("alt_text_llm.utils._convert_avif_to_png")
     def test_avif_calls_avif_converter(
         self, mock_convert: Mock, temp_dir: Path
     ) -> None:
@@ -673,7 +672,7 @@ class TestConvertAssetForLlm:
         utils._convert_asset_for_llm(avif_file, temp_dir)
         mock_convert.assert_called_once_with(avif_file, temp_dir)
 
-    @patch("scripts.utils._convert_gif_to_mp4")
+    @patch("alt_text_llm.utils._convert_gif_to_mp4")
     def test_gif_calls_gif_converter(
         self, mock_convert: Mock, temp_dir: Path
     ) -> None:
@@ -711,7 +710,7 @@ class TestDownloadAsset:
     ) -> None:
         """Test downloading local AVIF file gets converted."""
         avif_file = temp_dir / "image.avif"
-        test_utils.create_test_image(avif_file, "100x100")
+        create_test_image(avif_file, "100x100")
 
         base_queue_item.asset_path = "image.avif"
 

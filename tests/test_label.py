@@ -11,6 +11,7 @@ from rich import console
 from rich.console import Console
 
 from alt_text_llm import label, scan, utils
+from tests.test_helpers import create_markdown_file, create_test_image
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -118,7 +119,7 @@ class TestDisplayManager:
     ) -> None:
         # Create the markdown file that the queue item references
         markdown_file = Path(base_queue_item.markdown_file)
-        test_utils.create_markdown_file(
+        create_markdown_file(
             markdown_file, content="Test content for context display."
         )
 
@@ -129,7 +130,7 @@ class TestDisplayManager:
         self, display_manager: label.DisplayManager, temp_dir: Path
     ) -> None:
         test_image = temp_dir / "test.jpg"
-        test_utils.create_test_image(test_image, "100x100")
+        create_test_image(test_image, "100x100")
 
         with (
             patch("sys.stdout.isatty", return_value=False),
@@ -146,7 +147,7 @@ class TestDisplayManager:
         self, display_manager: label.DisplayManager, temp_dir: Path
     ) -> None:
         test_image = temp_dir / "test.jpg"
-        test_utils.create_test_image(test_image, "100x100")
+        create_test_image(test_image, "100x100")
 
         with (
             patch("subprocess.run") as mock_run,
@@ -163,7 +164,7 @@ class TestDisplayManager:
         self, display_manager: label.DisplayManager, temp_dir: Path
     ) -> None:
         test_image = temp_dir / "test.jpg"
-        test_utils.create_test_image(test_image, "100x100")
+        create_test_image(test_image, "100x100")
 
         with (
             patch("subprocess.run") as mock_run,
@@ -179,7 +180,7 @@ class TestDisplayManager:
         self, display_manager: label.DisplayManager, temp_dir: Path
     ) -> None:
         test_image = temp_dir / "test.jpg"
-        test_utils.create_test_image(test_image, "100x100")
+        create_test_image(test_image, "100x100")
 
         with patch.dict("os.environ", {"TMUX": "1"}):
             with pytest.raises(ValueError, match="Cannot open image in tmux"):
