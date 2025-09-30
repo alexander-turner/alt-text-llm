@@ -6,6 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from rich.console import Console
+from rich.text import Text
 
 from alt_text_llm import utils
 
@@ -291,9 +292,14 @@ def apply_captions(
                 applied_count += 1
                 status = "Would apply" if dry_run else "Applied"
                 old_text = f'"{old_alt}"' if old_alt else "(no alt)"
-                console.print(
-                    f'  [green]{status}:[/green] {old_text} → "{new_alt}" @ line {item.line_number}'
+
+                # Build message with Text to avoid markup parsing issues
+                message = Text("  ")
+                message.append(f"{status}:", style="green")
+                message.append(
+                    f' {old_text} → "{new_alt}" @ line {item.line_number}'
                 )
+                console.print(message)
 
     return applied_count
 
