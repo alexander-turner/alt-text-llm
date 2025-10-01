@@ -297,6 +297,8 @@ def label_suggestions(
 
     try:
         _process_labeling_loop(session, display, console)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Saving progress...[/yellow]")
     finally:
         if session.processed_results:
             utils.write_output(
