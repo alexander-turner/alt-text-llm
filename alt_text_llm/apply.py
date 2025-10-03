@@ -242,21 +242,25 @@ def _try_all_image_formats(
     Returns:
         Tuple of (modified line, old alt text or None)
     """
+    # Normalize alt text by replacing line breaks with ellipses
+    # Use + to collapse multiple consecutive line breaks into one ellipsis
+    normalized_alt = re.sub(r"(\r\n|\r|\n)+", " ... ", new_alt)
+
     # Try markdown image first
     modified_line, old_alt = _apply_markdown_image_alt(
-        line, asset_path, new_alt
+        line, asset_path, normalized_alt
     )
 
     # If no change, try wikilink image
     if modified_line == line:
         modified_line, old_alt = _apply_wikilink_image_alt(
-            line, asset_path, new_alt
+            line, asset_path, normalized_alt
         )
 
     # If no change, try HTML image
     if modified_line == line:
         modified_line, old_alt = _apply_html_image_alt(
-            line, asset_path, new_alt
+            line, asset_path, normalized_alt
         )
 
     return modified_line, old_alt

@@ -695,3 +695,132 @@ def test_apply_captions_deduplicates_unused_entries(
     # Should only show 1 entry, not 2 (deduplicated)
     assert "1 entry without 'final_alt' will be skipped:" in result
     assert "file.md: image.png" in result
+
+
+@pytest.mark.parametrize(
+    "line,new_alt,expected_fragment",
+    [
+        # Markdown: Unix line break
+        (
+            "![old](image.png)",
+            "Line one\nLine two",
+            "![Line one ... Line two](image.png)",
+        ),
+        # Markdown: Multiple consecutive line breaks (should collapse)
+        (
+            "![old](image.png)",
+            "Line one\n\nLine two",
+            "![Line one ... Line two](image.png)",
+        ),
+        # Markdown: Many consecutive line breaks
+        (
+            "![old](image.png)",
+            "Line one\n\n\n\nLine two",
+            "![Line one ... Line two](image.png)",
+        ),
+        # HTML: Unix line break
+        (
+            '<img src="image.png">',
+            "Line one\nLine two",
+            'alt="Line one ... Line two"',
+        ),
+        # HTML: Windows line break
+        (
+            '<img src="image.png">',
+            "Line one\r\nLine two",
+            'alt="Line one ... Line two"',
+        ),
+        # HTML: Multiple consecutive line breaks
+        (
+            '<img src="image.png">',
+            "Line one\n\n\nLine two",
+            'alt="Line one ... Line two"',
+        ),
+        # Wikilink: Unix line break
+        (
+            "![[image.png]]",
+            "Line one\nLine two",
+            "![[image.png|Line one ... Line two]]",
+        ),
+        # Wikilink: Multiple line breaks
+        ("![[image.png|old]]", "A\nB\nC", "![[image.png|A ... B ... C]]"),
+        # Mixed line break types
+        (
+            "![old](image.png)",
+            "A\nB\r\nC\rD",
+            "![A ... B ... C ... D](image.png)",
+        ),
+        # Mixed consecutive line breaks
+        (
+            "![old](image.png)",
+            "A\n\r\n\nB",
+            "![A ... B](image.png)",
+        ),
+        # Leading newline
+        (
+            "![old](image.png)",
+            "\nLine one",
+            "![ ... Line one](image.png)",
+        ),
+        # Trailing newline
+        (
+            "![old](image.png)",
+            "Line one\n",
+            "![Line one ... ](image.png)",
+        ),
+        # Only newlines
+        (
+            "![old](image.png)",
+            "\n\n\n",
+            "![ ... ](image.png)",
+        ),
+        # Newlines with text that needs escaping
+        (
+            "![old](image.png)",
+            "Cost $100\nAnother $200",
+            r"![Cost \$100 ... Another \$200](image.png)",
+        ),
+    ],
+)
+def test_try_all_image_formats_normalizes_line_breaks(
+    line: str, new_alt: str, expected_fragment: str
+) -> None:
+    """Test that line breaks in alt text are replaced with ellipses."""
+    new_line, _ = apply._try_all_image_formats(line, "image.png", new_alt)
+    assert expected_fragment in new_line
+
+
+def test_apply_caption_with_line_breaks_end_to_end(
+    temp_dir: Path, console: Console
+) -> None:
+    """Test end-to-end that line breaks in captions are replaced with ellipses."""
+    md_path = temp_dir / "test.md"
+    content = """# Test File
+
+Image: ![old alt](image.png)
+"""
+    md_path.write_text(content)
+
+    captions_path = temp_dir / "captions.json"
+    captions_data = [
+        {
+            "markdown_file": str(md_path),
+            "asset_path": "image.png",
+            "line_number": 3,
+            "suggested_alt": "suggested",
+            "final_alt": "First line\nSecond line\nThird line",
+            "model": "test-model",
+            "context_snippet": "context",
+        }
+    ]
+    captions_path.write_text(json.dumps(captions_data))
+
+    applied_count = apply.apply_captions(captions_path, console, dry_run=False)
+
+    assert applied_count == 1
+    new_content = md_path.read_text()
+    assert (
+        "![First line ... Second line ... Third line](image.png)"
+        in new_content
+    )
+    assert "\n" not in new_content.split("![")[1].split("]")[0]

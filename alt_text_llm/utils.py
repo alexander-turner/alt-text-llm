@@ -465,6 +465,7 @@ def build_prompt(
         - Return only the alt text, no quotes
         - For text-heavy images: transcribe key text content, then describe visual elements
         - Don't reintroduce acronyms
+        - Don't use line breaks in the alt text
         - Don't describe purely visual elements unless directly relevant for
         understanding the content (e.g. don't say "the line in this scientific chart is green")
         - Describe spatial relationships and visual hierarchy when important
