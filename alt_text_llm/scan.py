@@ -181,6 +181,9 @@ def _handle_html_asset(
 
     items: list[QueueItem] = []
     for src_attr, alt_text in _extract_html_img_info(token):
+        # In HTML, alt="" explicitly marks an image as decorative
+        if alt_text is not None and alt_text.strip() == "":
+            continue
         if _is_alt_meaningful(alt_text):
             continue
 

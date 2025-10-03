@@ -82,7 +82,7 @@ def test_build_queue_ignores_good_alt(tmp_path: Path) -> None:
         ),
         (
             '<img src="assets/baz.jpg" alt="">\n',
-            ["assets/baz.jpg"],
+            [],
         ),
     ],
 )
@@ -184,10 +184,7 @@ def test_get_line_number_raises_error_when_asset_not_found(
 
 
 def test_html_img_error_when_src_not_in_content(tmp_path: Path) -> None:
-    """Test error handling when HTML img src can't be found in file content."""
-    # Create a file where the regex will extract an img src but the src won't be found in content
-    # This is a bit contrived but tests the error path
-
+    """Test that HTML img with empty alt (decorative) is not queued."""
     md_content = textwrap.dedent(
         """
         # Title
@@ -199,8 +196,6 @@ def test_html_img_error_when_src_not_in_content(tmp_path: Path) -> None:
     )
     _write_md(tmp_path, md_content, "html_test.md")
 
-    # This should work normally
+    # Empty alt indicates decorative image, should not be queued
     queue = scan.build_queue(tmp_path)
-    assert len(queue) == 1
-    assert queue[0].asset_path == "findable.jpg"
-    assert queue[0].line_number == 6  # Line where <img> appears
+    assert len(queue) == 0
