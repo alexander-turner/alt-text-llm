@@ -232,7 +232,7 @@ def test_label_suggestions_saves_on_exceptions(
 def test_label_from_suggestions_file_loads_and_filters_data(
     temp_dir: Path,
 ) -> None:
-    """Test that label_from_suggestions_file loads suggestions and filters extra fields."""
+    """Test that label_from_suggestions_file loads suggestions and preserves final_alt if present."""
     suggestions_file = temp_dir / "suggestions.json"
     output_file = temp_dir / "output.json"
 
@@ -241,7 +241,7 @@ def test_label_from_suggestions_file_loads_and_filters_data(
             "markdown_file": "test.md",
             "asset_path": "image.jpg",
             "suggested_alt": "Test suggestion",
-            "final_alt": "Extra field",  # Should be filtered out
+            "final_alt": "Previously labeled alt text",  # Should be preserved
             "model": "test-model",
             "context_snippet": "context",
             "line_number": 10,
@@ -260,6 +260,38 @@ def test_label_from_suggestions_file_loads_and_filters_data(
     assert len(loaded_suggestions) == 1
     assert loaded_suggestions[0].asset_path == "image.jpg"
     assert loaded_suggestions[0].line_number == 10
+    assert loaded_suggestions[0].final_alt == "Previously labeled alt text"
+
+
+def test_label_from_suggestions_file_without_final_alt_field(
+    temp_dir: Path,
+) -> None:
+    """Test that suggestions without final_alt field are loaded correctly."""
+    suggestions_file = temp_dir / "suggestions.json"
+    output_file = temp_dir / "output.json"
+
+    suggestions_data = [
+        {
+            "markdown_file": "test.md",
+            "asset_path": "image.jpg",
+            "suggested_alt": "Test suggestion",
+            # No final_alt field at all
+            "model": "test-model",
+            "context_snippet": "context",
+            "line_number": 10,
+        }
+    ]
+
+    suggestions_file.write_text(json.dumps(suggestions_data), encoding="utf-8")
+
+    with patch.object(label, "label_suggestions") as mock_label:
+        mock_label.return_value = 1
+        label.label_from_suggestions_file(
+            suggestions_file, output_file, skip_existing=False
+        )
+
+    loaded_suggestions = mock_label.call_args[0][0]
+    assert len(loaded_suggestions) == 1
     assert loaded_suggestions[0].final_alt is None
 
 
@@ -269,7 +301,7 @@ def test_label_from_suggestions_file_loads_and_filters_data(
         (json.JSONDecodeError, "invalid json"),
         (FileNotFoundError, None),  # File doesn't exist
         (
-            KeyError,
+            TypeError,
             '[{"markdown_file": "test.md"}]',
         ),  # Missing required fields
     ],

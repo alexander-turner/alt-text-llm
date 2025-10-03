@@ -325,16 +325,8 @@ def label_from_suggestions_file(
 
     # Convert loaded data to AltGenerationResult, filtering out extra fields
     suggestions: list[utils.AltGenerationResult] = []
-    for s in suggestions_from_file:
-        filtered_data = {
-            "markdown_file": s["markdown_file"],
-            "asset_path": s["asset_path"],
-            "suggested_alt": s["suggested_alt"],
-            "model": s["model"],
-            "context_snippet": s["context_snippet"],
-            "line_number": int(s["line_number"]),
-        }
-        suggestions.append(utils.AltGenerationResult(**filtered_data))
+    for suggestion in suggestions_from_file:
+        suggestions.append(utils.AltGenerationResult(**suggestion))
 
     console.print(
         f"[green]Loaded {len(suggestions)} suggestions from {suggestions_file}[/green]"
