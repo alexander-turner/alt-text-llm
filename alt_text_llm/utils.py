@@ -289,7 +289,7 @@ class AltGenerationResult:
     suggested_alt: str
     model: str
     context_snippet: str
-    line_number: int
+    line_number: int | None = None
     final_alt: str | None = None
 
     def to_json(self) -> dict[str, object]:

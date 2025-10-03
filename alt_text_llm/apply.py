@@ -205,29 +205,6 @@ def _read_file_lines(md_path: Path) -> tuple[str, list[str]]:
     return source_text, lines
 
 
-def _validate_line_number(
-    target_line: int, total_lines: int, md_path: Path, console: Console
-) -> bool:
-    """
-    Validate that a line number is within valid range.
-
-    Args:
-        target_line: The line number to validate (1-based)
-        total_lines: Total number of lines in the file
-        md_path: Path to the markdown file (for error message)
-        console: Rich console for output
-
-    Returns:
-        True if valid, False otherwise
-    """
-    if target_line < 1 or target_line > total_lines:
-        console.print(
-            f"[yellow]Warning: Line {target_line} out of range for {md_path}[/yellow]"
-        )
-        return False
-    return True
-
-
 def _try_all_image_formats(
     line: str, asset_path: str, new_alt: str
 ) -> tuple[str, str | None]:
@@ -295,7 +272,7 @@ def _apply_caption_to_file(
     dry_run: bool = False,
 ) -> tuple[str | None, str] | None:
     """
-    Apply a caption to a specific asset in a markdown file.
+    Apply a caption to all instances of an asset in a markdown file.
 
     Args:
         md_path: Path to the markdown file
@@ -310,32 +287,28 @@ def _apply_caption_to_file(
 
     source_text, lines = _read_file_lines(md_path)
 
-    target_line = caption_item.line_number
+    modified_count = 0
+    last_old_alt: str | None = None
 
-    if not _validate_line_number(target_line, len(lines), md_path, console):
-        return None
+    # Search all lines for the asset and replace
+    for line_idx, original_line in enumerate(lines):
+        modified_line, old_alt = _try_all_image_formats(
+            original_line, caption_item.asset_path, caption_item.final_alt
+        )
 
-    # Get the target line (convert to 0-based index)
-    line_idx = target_line - 1
-    original_line = lines[line_idx]
+        if modified_line != original_line:
+            lines[line_idx] = modified_line
+            modified_count += 1
+            last_old_alt = old_alt
 
-    modified_line, old_alt = _try_all_image_formats(
-        original_line, caption_item.asset_path, caption_item.final_alt
-    )
-
-    # Check if anything changed
-    if modified_line == original_line:
+    if modified_count == 0:
         console.print(
-            f"[yellow]Warning: Could not find asset '{caption_item.asset_path}' on line {target_line} in {md_path}[/yellow]"
+            f"[orange]Warning: Could not find asset '{caption_item.asset_path}' in {md_path}[/orange]"
         )
         return None
 
-    # Apply the change
-    lines[line_idx] = modified_line
-
     _write_modified_lines(md_path, lines, source_text, dry_run)
-
-    return (old_alt, caption_item.final_alt)
+    return (last_old_alt, caption_item.final_alt)
 
 
 def _load_and_parse_captions(
@@ -420,7 +393,7 @@ def _display_caption_result(
     # Build message with Text to avoid markup parsing issues
     message = Text("  ")
     message.append(f"{status}:", style="green")
-    message.append(f' {old_text} → "{new_alt}" @ line {item.line_number}')
+    message.append(f' {old_text} → "{new_alt}"')
     console.print(message)
 
 
@@ -448,11 +421,8 @@ def _process_file_captions(
 
     console.print(f"\n[dim]Processing {md_path} ({len(items)} captions)[/dim]")
 
-    # Sort by line number (descending) to avoid line shifts when modifying
-    items_sorted = sorted(items, key=lambda x: x.line_number, reverse=True)
-
     applied_count = 0
-    for item in items_sorted:
+    for item in items:
         result = _apply_caption_to_file(
             md_path=md_path,
             caption_item=item,

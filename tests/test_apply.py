@@ -824,3 +824,117 @@ Image: ![old alt](image.png)
         in new_content
     )
     assert "\n" not in new_content.split("![")[1].split("]")[0]
+
+
+def test_apply_caption_with_none_line_number(
+    temp_dir: Path, console: Console
+) -> None:
+    """Test that apply works when line_number is None."""
+    md_path = temp_dir / "test.md"
+    content = """# Test
+    
+![old alt](image.png)
+
+More content.
+"""
+    md_path.write_text(content)
+
+    caption_item = utils.AltGenerationResult(
+        markdown_file=str(md_path),
+        asset_path="image.png",
+        suggested_alt="suggested",
+        model="test-model",
+        context_snippet="context",
+        line_number=None,
+        final_alt="new alt text",
+    )
+
+    result = apply._apply_caption_to_file(md_path, caption_item, console)
+
+    assert result is not None
+    old_alt, new_alt = result
+    assert old_alt == "old alt"
+    assert new_alt == "new alt text"
+
+    new_content = md_path.read_text()
+    assert "![new alt text](image.png)" in new_content
+    assert "![old alt](image.png)" not in new_content
+
+
+def test_apply_caption_replaces_all_instances(
+    temp_dir: Path, console: Console
+) -> None:
+    """Test that all instances of an asset get replaced."""
+    md_path = temp_dir / "test.md"
+    content = """# Test
+
+First instance: ![old alt 1](image.png)
+
+Some text.
+
+Second instance: ![old alt 2](image.png)
+
+More text.
+
+Third instance: ![](image.png)
+"""
+    md_path.write_text(content)
+
+    caption_item = utils.AltGenerationResult(
+        markdown_file=str(md_path),
+        asset_path="image.png",
+        suggested_alt="suggested",
+        model="test-model",
+        context_snippet="context",
+        line_number=None,
+        final_alt="new alt text",
+    )
+
+    result = apply._apply_caption_to_file(md_path, caption_item, console)
+
+    assert result is not None
+
+    new_content = md_path.read_text()
+    # All three instances should be updated
+    assert new_content.count("![new alt text](image.png)") == 3
+    assert "old alt 1" not in new_content
+    assert "old alt 2" not in new_content
+
+
+def test_apply_caption_with_mixed_formats(
+    temp_dir: Path, console: Console
+) -> None:
+    """Test that all formats (markdown, HTML, wikilink) get replaced."""
+    md_path = temp_dir / "test.md"
+    content = """# Test
+
+Markdown: ![old alt](image.png)
+
+HTML: <img src="image.png" alt="old html alt">
+
+Wikilink: ![[image.png|old wikilink alt]]
+"""
+    md_path.write_text(content)
+
+    caption_item = utils.AltGenerationResult(
+        markdown_file=str(md_path),
+        asset_path="image.png",
+        suggested_alt="suggested",
+        model="test-model",
+        context_snippet="context",
+        line_number=None,
+        final_alt="new alt text",
+    )
+
+    result = apply._apply_caption_to_file(md_path, caption_item, console)
+
+    assert result is not None
+
+    new_content = md_path.read_text()
+    # All three formats should be updated
+    assert "![new alt text](image.png)" in new_content
+    assert 'alt="new alt text"' in new_content
+    assert "![[image.png|new alt text]]" in new_content
+    assert "old alt" not in new_content
+    assert "old html alt" not in new_content
+    assert "old wikilink alt" not in new_content
