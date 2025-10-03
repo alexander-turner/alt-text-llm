@@ -10,6 +10,41 @@ from io import StringIO
 from alt_text_llm import apply, utils
 
 
+@pytest.mark.parametrize(
+    "input_text,expected",
+    [
+        ("Cost is $100 and $200", r"Cost is \$100 and \$200"),
+        (r"Path is C:\Users\test", r"Path is C:\\Users\\test"),
+        (r"Formula: x\in set, cost $50", r"Formula: x\\in set, cost \$50"),
+        (
+            "A simple description with no special chars",
+            "A simple description with no special chars",
+        ),
+    ],
+)
+def test_escape_markdown_alt_text(input_text: str, expected: str) -> None:
+    """Test escaping special characters in markdown alt text."""
+    assert apply._escape_markdown_alt_text(input_text) == expected
+
+
+@pytest.mark.parametrize(
+    "input_text,expected",
+    [
+        ("Tom & Jerry", "Tom &amp; Jerry"),
+        ("Formula: x < y and y > z", "Formula: x &lt; y and y &gt; z"),
+        ('She said "hello"', "She said &quot;hello&quot;"),
+        (
+            '<tag attr="value"> & more',
+            "&lt;tag attr=&quot;value&quot;&gt; &amp; more",
+        ),
+        ("A simple description", "A simple description"),
+    ],
+)
+def test_escape_html_alt_text(input_text: str, expected: str) -> None:
+    """Test escaping special characters in HTML alt text."""
+    assert apply._escape_html_alt_text(input_text) == expected
+
+
 @pytest.fixture
 def console():
     """Create a Rich console for tests."""
@@ -386,74 +421,124 @@ def test_apply_wikilink_image_alt_special_chars() -> None:
     assert new_line == "Image: ![[path/to/image (1).png|new alt]] here"
 
 
-def test_markdown_image_alt_with_backslash() -> None:
-    """Test applying alt text containing backslash (regex special char)."""
-    line = "This is ![old alt](image.png) in text"
-    # Alt text with backslash that would cause re.error if not handled properly
-    new_alt = r"A diagram\showing states A, B, and C"
+@pytest.mark.parametrize(
+    "line,new_alt,expected_old_alt,expected_escaped",
+    [
+        (
+            "This is ![old alt](image.png) in text",
+            r"A diagram\showing states A, B, and C",
+            "old alt",
+            r"A diagram\\showing states A, B, and C",
+        ),
+        (
+            "This is ![](image.png) in text",
+            "Price is $100 and $200",
+            None,
+            r"Price is \$100 and \$200",
+        ),
+        (
+            "![](test.png)",
+            r"A diagram (version 1.0) showing $variable\in set {A, B, C}",
+            None,
+            r"A diagram (version 1.0) showing \$variable\\in set {A, B, C}",
+        ),
+    ],
+)
+def test_markdown_image_alt_with_special_chars(
+    line: str,
+    new_alt: str,
+    expected_old_alt: str | None,
+    expected_escaped: str,
+) -> None:
+    """Test applying markdown alt text with special characters that need escaping."""
     new_line, old_alt = apply._apply_markdown_image_alt(
-        line, "image.png", new_alt
+        line, "image.png" if "image.png" in line else "test.png", new_alt
     )
-
-    assert old_alt == "old alt"
-    assert new_line == f"This is ![{new_alt}](image.png) in text"
-
-
-def test_markdown_image_alt_with_dollar_sign() -> None:
-    """Test applying alt text containing dollar sign (backreference char)."""
-    line = "This is ![](image.png) in text"
-    new_alt = "Price is $100 and $200"
-    new_line, old_alt = apply._apply_markdown_image_alt(
-        line, "image.png", new_alt
+    assert old_alt == expected_old_alt
+    asset_path = "image.png" if "image.png" in line else "test.png"
+    expected_line = line.replace(
+        f"![{expected_old_alt or ''}]({asset_path})",
+        f"![{expected_escaped}]({asset_path})",
     )
-
-    assert old_alt is None
-    assert new_line == f"This is ![{new_alt}](image.png) in text"
+    assert new_line == expected_line
 
 
-def test_html_image_alt_with_backslash() -> None:
-    """Test applying HTML alt text containing backslash."""
-    line = '<img alt="old" src="image.png">'
-    new_alt = r"Diagram\showing process"
+@pytest.mark.parametrize(
+    "line,new_alt,expected_old_alt,expected_escaped",
+    [
+        # Backslashes don't need escaping in HTML
+        (
+            '<img alt="old" src="image.png">',
+            r"Diagram\showing process",
+            "old",
+            r"Diagram\showing process",
+        ),
+        (
+            '<img src="image.png">',
+            r"A state transition diagram\showing paths",
+            None,
+            r"A state transition diagram\showing paths",
+        ),
+        # HTML special characters should be escaped
+        (
+            '<img alt="old" src="image.png">',
+            'Tom & Jerry <3 "quotes"',
+            "old",
+            "Tom &amp; Jerry &lt;3 &quot;quotes&quot;",
+        ),
+        (
+            '<img src="image.png">',
+            "x < y > z & more",
+            None,
+            "x &lt; y &gt; z &amp; more",
+        ),
+    ],
+)
+def test_html_image_alt_with_special_chars(
+    line: str,
+    new_alt: str,
+    expected_old_alt: str | None,
+    expected_escaped: str,
+) -> None:
+    """Test applying HTML alt text with special characters."""
     new_line, old_alt = apply._apply_html_image_alt(line, "image.png", new_alt)
-
-    assert old_alt == "old"
-    assert new_line == f'<img alt="{new_alt}" src="image.png">'
-
-
-def test_html_image_alt_no_alt_with_backslash() -> None:
-    """Test adding HTML alt text containing backslash when no alt exists."""
-    line = '<img src="image.png">'
-    new_alt = r"A state transition diagram\showing paths"
-    new_line, old_alt = apply._apply_html_image_alt(line, "image.png", new_alt)
-
-    assert old_alt is None
-    assert new_line == f'<img alt="{new_alt}" src="image.png">'
+    assert old_alt == expected_old_alt
+    assert new_line == f'<img alt="{expected_escaped}" src="image.png">'
 
 
-def test_wikilink_image_alt_with_backslash() -> None:
-    """Test applying wikilink alt text containing backslash."""
-    line = "Image: ![[image.png|old alt]] here"
-    new_alt = r"Diagram\with backslash"
+@pytest.mark.parametrize(
+    "line,new_alt,expected_old_alt,expected_escaped",
+    [
+        (
+            "Image: ![[image.png|old alt]] here",
+            r"Diagram\with backslash",
+            "old alt",
+            r"Diagram\\with backslash",
+        ),
+        (
+            "Image: ![[image.png]] here",
+            "Cost $100",
+            None,
+            r"Cost \$100",
+        ),
+    ],
+)
+def test_wikilink_image_alt_with_special_chars(
+    line: str,
+    new_alt: str,
+    expected_old_alt: str | None,
+    expected_escaped: str,
+) -> None:
+    """Test applying wikilink alt text with special characters (uses markdown escaping)."""
     new_line, old_alt = apply._apply_wikilink_image_alt(
         line, "image.png", new_alt
     )
-
-    assert old_alt == "old alt"
-    assert new_line == f"Image: ![[image.png|{new_alt}]] here"
-
-
-def test_markdown_image_alt_with_multiple_special_chars() -> None:
-    """Test alt text with multiple regex special characters."""
-    line = "![](test.png)"
-    # Complex alt text that would fail without proper escaping
-    new_alt = r"A diagram (version 1.0) showing $variable\in set {A, B, C}"
-    new_line, old_alt = apply._apply_markdown_image_alt(
-        line, "test.png", new_alt
+    assert old_alt == expected_old_alt
+    expected_line = line.replace(
+        f"![[image.png{f'|{expected_old_alt}' if expected_old_alt else ''}]]",
+        f"![[image.png|{expected_escaped}]]",
     )
-
-    assert old_alt is None
-    assert new_line == f"![{new_alt}](test.png)"
+    assert new_line == expected_line
 
 
 def test_display_unused_entries_empty(console_with_output: tuple) -> None:

@@ -11,6 +11,41 @@ from rich.text import Text
 from alt_text_llm import utils
 
 
+def _escape_markdown_alt_text(alt_text: str) -> str:
+    """
+    Escape special characters in alt text for markdown.
+
+    Args:
+        alt_text: The alt text to escape
+
+    Returns:
+        Escaped alt text safe for markdown
+    """
+    # Escape backslashes first to avoid double-escaping
+    alt_text = alt_text.replace("\\", "\\\\")
+    # Escape dollar signs to prevent LaTeX interpretation
+    alt_text = alt_text.replace("$", "\\$")
+    return alt_text
+
+
+def _escape_html_alt_text(alt_text: str) -> str:
+    """
+    Escape special characters in alt text for HTML.
+
+    Args:
+        alt_text: The alt text to escape
+
+    Returns:
+        Escaped alt text safe for HTML attributes
+    """
+    # Escape HTML special characters
+    alt_text = alt_text.replace("&", "&amp;")
+    alt_text = alt_text.replace("<", "&lt;")
+    alt_text = alt_text.replace(">", "&gt;")
+    alt_text = alt_text.replace('"', "&quot;")
+    return alt_text
+
+
 def _apply_markdown_image_alt(
     line: str, asset_path: str, new_alt: str
 ) -> tuple[str, str | None]:
@@ -35,9 +70,11 @@ def _apply_markdown_image_alt(
         return line, None
 
     old_alt = match.group(1) if match.group(1) else None
+    # Escape special characters in alt text
+    escaped_alt = _escape_markdown_alt_text(new_alt)
     # Replace the alt text - use lambda to avoid backslash interpretation in replacement
     new_line = re.sub(
-        pattern, lambda m: f"![{new_alt}]({asset_path})", line, count=1
+        pattern, lambda m: f"![{escaped_alt}]({asset_path})", line, count=1
     )
     return new_line, old_alt
 
@@ -76,12 +113,15 @@ def _apply_html_image_alt(
     alt_pattern = r'alt="([^"]*)"'
     alt_match = re.search(alt_pattern, img_attrs, re.IGNORECASE)
 
+    # Escape special characters in alt text for HTML
+    escaped_alt = _escape_html_alt_text(new_alt)
+
     if alt_match:
         old_alt = alt_match.group(1)
         # Replace existing alt - use lambda to avoid backslash interpretation
         new_attrs = re.sub(
             alt_pattern,
-            lambda m: f'alt="{new_alt}"',
+            lambda m: f'alt="{escaped_alt}"',
             img_attrs,
             count=1,
             flags=re.IGNORECASE,
@@ -91,7 +131,7 @@ def _apply_html_image_alt(
         # Use lambda to avoid backslash interpretation in replacement
         new_attrs = re.sub(
             rf'(src="{escaped_path}")',
-            lambda m: f'alt="{new_alt}" {m.group(1)}',
+            lambda m: f'alt="{escaped_alt}" {m.group(1)}',
             img_attrs,
             count=1,
             flags=re.IGNORECASE,
@@ -128,9 +168,11 @@ def _apply_wikilink_image_alt(
         return line, None
 
     old_alt = match.group(1) if match.group(1) else None
+    # Escape special characters in alt text (wikilinks are still markdown)
+    escaped_alt = _escape_markdown_alt_text(new_alt)
     # Replace with new alt text - use lambda to avoid backslash interpretation
     new_line = re.sub(
-        pattern, lambda m: f"![[{asset_path}|{new_alt}]]", line, count=1
+        pattern, lambda m: f"![[{asset_path}|{escaped_alt}]]", line, count=1
     )
     return new_line, old_alt
 
