@@ -203,30 +203,37 @@ def test_label_suggestions_handles_file_errors(
     _maybe_assert_saved_results(output_file, 1)
 
 
-@pytest.mark.parametrize(
-    "error_type, error_on_item, expected_saved_count",
-    [
-        (KeyboardInterrupt, "image2.jpg", 1),  # Interrupt after first item
-        (RuntimeError, "image1.jpg", 0),  # Error before any processing
-    ],
-)
-def test_label_suggestions_saves_on_exceptions(
+def test_label_suggestions_saves_on_keyboard_interrupt(
     temp_dir: Path,
     test_suggestions: list[utils.AltGenerationResult],
-    error_type,
-    error_on_item: str,
-    expected_saved_count: int,
 ) -> None:
-    """Test that results are saved when exceptions occur during processing."""
+    """Test that results are saved when KeyboardInterrupt occurs during processing."""
     output_file = temp_dir / "test_output.json"
 
-    with _setup_error_mocks(error_type, error_on_item):
-        with pytest.raises(error_type):
+    with _setup_error_mocks(KeyboardInterrupt, "image2.jpg"):
+        # KeyboardInterrupt is caught and handled gracefully, no exception raised
+        label.label_suggestions(
+            test_suggestions, Mock(), output_file, append_mode=False
+        )
+
+    _maybe_assert_saved_results(output_file, 1)
+
+
+def test_label_suggestions_saves_on_runtime_error(
+    temp_dir: Path,
+    test_suggestions: list[utils.AltGenerationResult],
+) -> None:
+    """Test that results are saved when RuntimeError occurs during processing."""
+    output_file = temp_dir / "test_output.json"
+
+    with _setup_error_mocks(RuntimeError, "image1.jpg"):
+        # RuntimeError is not caught, so it should still raise
+        with pytest.raises(RuntimeError):
             label.label_suggestions(
                 test_suggestions, Mock(), output_file, append_mode=False
             )
 
-    _maybe_assert_saved_results(output_file, expected_saved_count)
+    _maybe_assert_saved_results(output_file, 0)
 
 
 def test_label_from_suggestions_file_loads_and_filters_data(
