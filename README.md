@@ -2,6 +2,13 @@
 
 AI-powered alt text generation and labeling tools for markdown content. Originally developed for [my website](https://turntrout.com/design) ([repo](https://github.com/alexander-turner/TurnTrout.com)).
 
+## Features
+
+- **Intelligent scanning** - Detects images/videos missing meaningful alt text (ignores empty `alt=""`)
+- **AI-powered generation** - Uses LLM of your choice to create context-aware alt text suggestions
+- **Interactive labeling** - Manually review and edit LLM suggestions. Images display directly in your terminal
+- **Automatic application** - Apply approved captions back to your markdown files
+
 ## Installation
 
 ### From PyPI
@@ -19,14 +26,6 @@ cd alt-text-llm
 ```
 
 ## Prerequisites
-
-The following command-line tools must be installed:
-
-- **`llm`** - LLM interface ([install instructions](https://llm.datasette.io/))
-- **`git`** - Version control
-- **`magick`** (ImageMagick) - Image processing
-- **`ffmpeg`** - Video processing
-- **`imgcat`** - Terminal image display
 
 **macOS:**
 
