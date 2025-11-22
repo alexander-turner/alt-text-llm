@@ -334,7 +334,7 @@ def test_prompt_for_edit_undo_command(user_input: str) -> None:
     console = Console()
     display = label.DisplayManager(console)
 
-    with patch("builtins.input", return_value=user_input):
+    with patch("alt_text_llm.label.prompt", return_value=user_input):
         result = display.prompt_for_edit("test suggestion")
         assert result == label.UNDO_REQUESTED
 

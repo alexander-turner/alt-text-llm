@@ -24,9 +24,7 @@ UNDO_REQUESTED = "UNDO_REQUESTED"
 class LabelingSession:
     """Manages the labeling session state and navigation."""
 
-    def __init__(
-        self, suggestions: Sequence[utils.AltGenerationResult]
-    ) -> None:
+    def __init__(self, suggestions: Sequence[utils.AltGenerationResult]) -> None:
         self.suggestions = suggestions
         self.current_index = 0
         self.processed_results: list[utils.AltGenerationResult] = []
@@ -104,9 +102,7 @@ class DisplayManager:
 
     def show_progress(self, current: int, total: int) -> None:
         """Display progress information."""
-        progress_text = (
-            f"Progress: {current}/{total} ({(current-1)/total*100:.1f}%)"
-        )
+        progress_text = f"Progress: {current}/{total} ({(current-1)/total*100:.1f}%)"
         self.console.print(f"[dim]{progress_text}[/dim]")
 
     def prompt_for_edit(
@@ -123,7 +119,7 @@ class DisplayManager:
         self.console.print(
             "\n[bold blue]Edit alt text (or press Enter to accept, 'undo' to go back). Exiting will save your progress.[/bold blue]"
         )
-        
+
         # Use prompt_toolkit for reliable prefilling across all shells
         try:
             result = prompt(
@@ -211,9 +207,7 @@ def _filter_suggestions_by_existing(
 ) -> list[utils.AltGenerationResult]:
     """Filter out suggestions that already have captions."""
     existing_captions = utils.load_existing_captions(output_path)
-    filtered = [
-        s for s in suggestions if s.asset_path not in existing_captions
-    ]
+    filtered = [s for s in suggestions if s.asset_path not in existing_captions]
 
     skipped_count = len(suggestions) - len(filtered)
     if skipped_count > 0:
@@ -288,9 +282,7 @@ def label_suggestions(
     vi_mode: bool = False,
 ) -> int:
     """Load suggestions and allow user to label them, collecting results."""
-    console.print(
-        f"\n[bold blue]Labeling {len(suggestions)} suggestions[/bold blue]\n"
-    )
+    console.print(f"\n[bold blue]Labeling {len(suggestions)} suggestions[/bold blue]\n")
 
     suggestions_to_process = (
         _filter_suggestions_by_existing(suggestions, output_path, console)
