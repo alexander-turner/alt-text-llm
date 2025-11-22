@@ -2,7 +2,6 @@
 
 import json
 import os
-import readline
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Sequence
 import sys
 
 import requests
+from prompt_toolkit import prompt
 from rich.box import ROUNDED
 from rich.console import Console
 from rich.markdown import Markdown
@@ -120,15 +120,21 @@ class DisplayManager:
         if current is not None and total is not None:
             self.show_progress(current, total)
 
-        # Enable vim keybindings for readline if requested
-        if self.vi_mode:
-            readline.parse_and_bind("set editing-mode vi")
-        readline.set_startup_hook(lambda: readline.insert_text(suggestion))
         self.console.print(
             "\n[bold blue]Edit alt text (or press Enter to accept, 'undo' to go back). Exiting will save your progress.[/bold blue]"
         )
-        result = input("> ")
-        readline.set_startup_hook(None)
+        
+        # Use prompt_toolkit for reliable prefilling across all shells
+        try:
+            result = prompt(
+                "> ",
+                default=suggestion,
+                vi_mode=self.vi_mode,
+                multiline=False,
+            )
+        except (EOFError, KeyboardInterrupt):
+            # Handle Ctrl+C or Ctrl+D gracefully
+            raise KeyboardInterrupt
 
         # Check for undo command
         if result.strip().lower() in ("undo", "u"):
