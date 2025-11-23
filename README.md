@@ -46,7 +46,7 @@ pip install llm
 
 ## Usage
 
-The tool provides three main commands: `scan`, `generate`, and `label`.
+The tool provides four main commands: `scan`, `generate`, `label`, and `apply`.
 
 ### 1. Scan for missing alt text
 
@@ -103,6 +103,30 @@ alt-text-llm label \
 - Submit `undo` or `u` to go back to the previous item
 - Images display in your terminal (requires `imgcat`)
 
+### 4. Apply approved captions
+
+Apply the approved captions back to your markdown files:
+
+```bash
+alt-text-llm apply \
+  --captions-file asset_captions.json
+```
+
+**Available options:**
+
+- `--captions-file` - Path to the captions JSON file with `final_alt` populated (default: `asset_captions.json`)
+- `--dry-run` - Preview changes without modifying files
+
+**What it does:**
+
+- Reads approved captions from the captions file
+- Locates corresponding images/videos in markdown files
+- Updates alt text for all supported formats:
+  - Markdown images: `![alt](path)`
+  - HTML img tags: `<img src="path" alt="alt">`
+  - Wikilink images: `![[path|alt]]`
+- Preserves file formatting and handles special characters
+
 ## Example workflow
 
 ```bash
@@ -122,6 +146,9 @@ alt-text-llm generate \
 
 # 4. Review and approve suggestions
 alt-text-llm label
+
+# 5. Apply approved captions to markdown files
+alt-text-llm apply
 ```
 
 ## Configuration
