@@ -9,6 +9,8 @@ AI-powered alt text generation and labeling tools for markdown content. Original
 - **Interactive labeling** - Manually review and edit LLM suggestions. Images display directly in your terminal
 - **Automatic application** - Apply approved captions back to your markdown files
 
+![A labeled example of the labeling pipeline: 1) view the context for an image, 2) view the image itself, while 3) editing the AI-generated label suggestion.](image.png)
+
 ## Installation
 
 ### From PyPI
