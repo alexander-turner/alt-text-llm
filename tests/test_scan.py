@@ -1,5 +1,6 @@
 import textwrap
 from pathlib import Path
+from markdown_it.token import Token
 
 import pytest
 
@@ -155,7 +156,6 @@ def test_get_line_number_raises_error_when_asset_not_found(
     tmp_path: Path,
 ) -> None:
     """Test that _get_line_number raises ValueError when asset can't be found in file."""
-    from markdown_it.token import Token
 
     # Create a markdown file without the asset we're looking for
     md_content = textwrap.dedent(
@@ -199,3 +199,194 @@ def test_html_img_error_when_src_not_in_content(tmp_path: Path) -> None:
     # Empty alt indicates decorative image, should not be queued
     queue = scan.build_queue(tmp_path)
     assert len(queue) == 0
+
+
+@pytest.mark.parametrize(
+    "content, expected_paths",
+    [
+        # Wikilink without alt
+        ("![[assets/image.png]]", ["assets/image.png"]),
+        # Wikilink without meaningful alt
+        ("![[assets/image.png|]]", ["assets/image.png"]),
+        # Wikilink with meaningful alt
+        ("![[assets/image.png|Good description]]", []),
+        # Wikilink with placeholder alt
+        ("![[assets/image.png|image]]", ["assets/image.png"]),
+        # Wikilink with URL
+        ("![[https://example.com/image.png]]", ["https://example.com/image.png"]),
+        # Multiple wikilinks mixed
+        (
+            "![[img1.png|image]]\n![[img2.png|Good alt]]\n![[img3.png]]",
+            ["img1.png", "img3.png"],
+        ),
+    ],
+)
+def test_wikilink_formats(
+    tmp_path: Path, content: str, expected_paths: list[str]
+) -> None:
+    """Test wikilink image detection with various formats."""
+    _write_md(tmp_path, content, "wikilink.md")
+    queue = scan.build_queue(tmp_path)
+    assert sorted(item.asset_path for item in queue) == sorted(expected_paths)
+
+
+def test_mixed_image_formats(tmp_path: Path) -> None:
+    """Test that markdown, HTML, and wikilink images are all detected."""
+    md_content = (
+        "![](markdown.png)\n"
+        '<img src="html.jpg">\n'
+        "![[wikilink.gif]]\n"
+        "![Good](good-md.png)\n"
+        '<img src="good-html.jpg" alt="Good">\n'
+        "![[good-wiki.png|Good]]"
+    )
+    _write_md(tmp_path, md_content, "mixed.md")
+
+    queue = scan.build_queue(tmp_path)
+    paths = {item.asset_path for item in queue}
+    assert paths == {"markdown.png", "html.jpg", "wikilink.gif"}
+
+
+def test_build_queue_wikilink_without_alt(tmp_path: Path) -> None:
+    """Test that wikilink images without alt text are detected."""
+    md_content = textwrap.dedent(
+        """
+        # Test Document
+        
+        Here is a wikilink image without alt text:
+        
+        ![[assets/image.png]]
+        
+        End of document.
+        """
+    )
+    _write_md(tmp_path, md_content, "wikilink.md")
+
+    queue = scan.build_queue(tmp_path)
+    assert len(queue) == 1
+    assert queue[0].asset_path == "assets/image.png"
+    assert "Here is a wikilink image" in queue[0].context_snippet
+
+
+def test_build_queue_wikilink_with_alt(tmp_path: Path) -> None:
+    """Test that wikilink images with meaningful alt text are not queued."""
+    md_content = textwrap.dedent(
+        """
+        # Test Document
+        
+        ![[assets/image.png|A meaningful description of the image]]
+        """
+    )
+    _write_md(tmp_path, md_content, "wikilink_with_alt.md")
+
+    queue = scan.build_queue(tmp_path)
+    assert len(queue) == 0
+
+
+def test_build_queue_wikilink_with_placeholder_alt(tmp_path: Path) -> None:
+    """Test that wikilink images with placeholder alt text are queued."""
+    md_content = textwrap.dedent(
+        """
+        # Test Document
+        
+        ![[assets/image.png|image]]
+        ![[assets/photo.jpg|photo]]
+        ![[assets/pic.png|Good description]]
+        """
+    )
+    _write_md(tmp_path, md_content, "wikilink_placeholder.md")
+
+    queue = scan.build_queue(tmp_path)
+    # First two should be queued (placeholder alts), third should not
+    assert len(queue) == 2
+    paths = {item.asset_path for item in queue}
+    assert "assets/image.png" in paths
+    assert "assets/photo.jpg" in paths
+    assert "assets/pic.png" not in paths
+
+
+def test_build_queue_wikilink_with_url(tmp_path: Path) -> None:
+    """Test that wikilink images with full URLs are detected."""
+    md_content = textwrap.dedent(
+        """
+        # Test Document
+        
+        ![[https://example.com/image.png]]
+        ![[https://example.com/photo.jpg|Good alt text]]
+        """
+    )
+    _write_md(tmp_path, md_content, "wikilink_url.md")
+
+    queue = scan.build_queue(tmp_path)
+    # Only the first one (without alt) should be queued
+    assert len(queue) == 1
+    assert queue[0].asset_path == "https://example.com/image.png"
+
+
+def test_build_queue_mixed_formats(tmp_path: Path) -> None:
+    """Test that all image formats (markdown, HTML, wikilink) are detected together."""
+    md_content = textwrap.dedent(
+        """
+        # Mixed Formats
+        
+        Markdown without alt: ![](markdown.png)
+        
+        HTML without alt: <img src="html.jpg">
+        
+        Wikilink without alt: ![[wikilink.gif]]
+        
+        Markdown with alt: ![Good description](good-markdown.png)
+        
+        HTML with alt: <img src="good-html.jpg" alt="Good description">
+        
+        Wikilink with alt: ![[good-wikilink.png|Good description]]
+        """
+    )
+    _write_md(tmp_path, md_content, "mixed.md")
+
+    queue = scan.build_queue(tmp_path)
+    # Should find 3 images without meaningful alt text
+    assert len(queue) == 3
+    paths = {item.asset_path for item in queue}
+    assert "markdown.png" in paths
+    assert "html.jpg" in paths
+    assert "wikilink.gif" in paths
+    # Should not include images with good alt text
+    assert "good-markdown.png" not in paths
+    assert "good-html.jpg" not in paths
+    assert "good-wikilink.png" not in paths
+
+
+def test_wikilink_line_numbers(tmp_path: Path) -> None:
+    """Test that line numbers are correctly identified for wikilink images."""
+    md_content = textwrap.dedent(
+        """
+        ---
+        title: Test
+        ---
+        
+        First paragraph.
+        
+        ![[image1.png]]
+        
+        Second paragraph.
+        
+        ![[image2.png]]
+        
+        Third paragraph.
+        """
+    )
+    file_path = _write_md(tmp_path, md_content, "line_numbers.md")
+
+    queue = scan.build_queue(tmp_path)
+    assert len(queue) == 2
+
+    # Find actual line numbers in the file
+    lines = file_path.read_text().splitlines()
+    image1_line = next(i + 1 for i, line in enumerate(lines) if "image1.png" in line)
+    image2_line = next(i + 1 for i, line in enumerate(lines) if "image2.png" in line)
+
+    # Check that detected line numbers match
+    line_numbers = {item.line_number for item in queue}
+    assert image1_line in line_numbers
+    assert image2_line in line_numbers

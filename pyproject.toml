@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alt-text-llm"
-version = "1.0.1"
+version = "1.1"
 description = "AI-powered alt text generation and labeling tools for markdown content"
 readme = "README.md"
 authors = [{name = "TurnTrout"}]

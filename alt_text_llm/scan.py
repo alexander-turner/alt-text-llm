@@ -71,10 +71,6 @@ def _iter_image_tokens(tokens: Sequence[Token]) -> Iterable[Token]:
     while stack:
         token = stack.pop()
 
-        # Depth-first traversal of the token tree.
-        if token.children:
-            stack.extend(token.children)
-
         if token.type == "image":
             yield token
             continue
@@ -84,12 +80,27 @@ def _iter_image_tokens(tokens: Sequence[Token]) -> Iterable[Token]:
             and "<img" in token.content.lower()
         ):
             yield token
+            continue
+
+        # Check for wikilink images: ![[path]] or ![[path|alt]]
+        # Yield inline tokens containing wikilinks for processing
+        if token.type == "inline" and "![[" in token.content:
+            yield token
+            # Still traverse children to find regular markdown images
+
+        # Depth-first traversal of the token tree
+        if token.children:
+            stack.extend(token.children)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Wikilink image pattern: ![[path]] or ![[path|alt]]
+_WIKILINK_IMG_RE = re.compile(
+    r"!\[\[(?P<src>[^\]|]+)(?:\|(?P<alt>[^\]]*))?\]\]"
+)
 
 _ALT_RE = re.compile(r"alt=\"(?P<alt>[^\"]*)\"", re.IGNORECASE)
 
@@ -193,6 +204,37 @@ def _handle_html_asset(
     return items
 
 
+def _handle_wikilink_asset(
+    token: Token, md_path: Path, lines: Sequence[str]
+) -> list[QueueItem]:
+    """
+    Process a token containing wikilink-style images: ![[path]] or ![[path|alt]].
+
+    Args:
+        token: Token potentially containing one or more wikilink images.
+        md_path: Current markdown file path.
+        lines: Contents of *md_path* split by lines.
+
+    Returns:
+        List of ``QueueItem`` instances—one for each wikilink image lacking alt text.
+    """
+
+    items: list[QueueItem] = []
+    for match in _WIKILINK_IMG_RE.finditer(token.content):
+        src_attr = match.group("src")
+        alt_text = match.group("alt")
+
+        if _is_alt_meaningful(alt_text):
+            continue
+
+        # Search for the wikilink pattern in the file
+        search_snippet = f"![[{src_attr}"
+        line_no = _get_line_number(token, lines, search_snippet)
+        items.append(_create_queue_item(md_path, src_attr, line_no, lines))
+
+    return items
+
+
 def _process_file(md_path: Path) -> list[QueueItem]:
     md = MarkdownIt("commonmark")
     source_text = md_path.read_text(encoding="utf-8")
@@ -203,8 +245,11 @@ def _process_file(md_path: Path) -> list[QueueItem]:
     for token in _iter_image_tokens(tokens):
         if token.type == "image":
             token_items = _handle_md_asset(token, md_path, lines)
-        else:
+        elif token.type in {"html_inline", "html_block"}:
             token_items = _handle_html_asset(token, md_path, lines)
+        else:
+            # Handle wikilink images
+            token_items = _handle_wikilink_asset(token, md_path, lines)
         items.extend(token_items)
     return items
 
