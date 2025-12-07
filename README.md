@@ -168,14 +168,14 @@ This tool uses the [`llm` CLI tool](https://llm.datasette.io/) to generate alt t
 ```bash
 llm install llm-gemini
 llm keys set gemini # enter API key
-llm -m gemini-2.5-flash "Hello, world!"
+llm -m gemini-flash-latest "Hello, world!"
 ```
 
 **For other models:**
 
 1. Install the appropriate llm plugin (e.g., `llm install llm-openai`)
 2. Configure your API key (e.g., `llm keys set openai`)
-3. Use the model name with `--model` flag (e.g., `--model gpt-4o-mini`)
+3. Use the model name with `--model` flag.
 
 See the [llm documentation](https://llm.datasette.io/en/stable/setup.html) for setup instructions and the [plugin directory](https://llm.datasette.io/en/stable/plugins/directory.html) for available models.
 
