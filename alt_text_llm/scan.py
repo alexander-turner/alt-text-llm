@@ -55,6 +55,23 @@ _PLACEHOLDER_ALTS: set[str] = {
     "picture",
 }
 
+# Common image and video extensions for wikilink detection
+# Using tuple for deterministic ordering in parameterized tests
+WIKILINK_ASSET_EXTENSIONS: tuple[str, ...] = (
+    ".avif",
+    ".bmp",
+    ".gif",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".mp4",
+    ".mov",
+    ".png",
+    ".svg",
+    ".webm",
+    ".webp",
+)
+
 
 def _is_alt_meaningful(alt: str | None) -> bool:
     if alt is None:
@@ -98,9 +115,7 @@ def _iter_image_tokens(tokens: Sequence[Token]) -> Iterable[Token]:
 # ---------------------------------------------------------------------------
 
 # Wikilink image pattern: ![[path]] or ![[path|alt]]
-_WIKILINK_IMG_RE = re.compile(
-    r"!\[\[(?P<src>[^\]|]+)(?:\|(?P<alt>[^\]]*))?\]\]"
-)
+_WIKILINK_IMG_RE = re.compile(r"!\[\[(?P<src>[^\]|]+)(?:\|(?P<alt>[^\]]*))?\]\]")
 
 _ALT_RE = re.compile(r"alt=\"(?P<alt>[^\"]*)\"", re.IGNORECASE)
 
@@ -124,9 +139,7 @@ def _extract_html_img_info(token: Token) -> list[tuple[str, str | None]]:
     return infos
 
 
-def _get_line_number(
-    token: Token, lines: Sequence[str], search_snippet: str
-) -> int:
+def _get_line_number(token: Token, lines: Sequence[str], search_snippet: str) -> int:
     if token.map:
         return token.map[0] + 1
 
@@ -143,9 +156,7 @@ def _get_line_number(
             if asset_path in ln:
                 return idx + 1
 
-    raise ValueError(
-        f"Could not find asset '{search_snippet}' in markdown file"
-    )
+    raise ValueError(f"Could not find asset '{search_snippet}' in markdown file")
 
 
 def _handle_md_asset(
@@ -204,11 +215,29 @@ def _handle_html_asset(
     return items
 
 
+WIKILINK_ASSET_EXTENSIONS: tuple[str, ...] = (
+    ".avif",
+    ".bmp",
+    ".gif",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".svg",
+    ".webp",
+    ".gif",
+    ".mp4",
+    ".webm",
+    ".mov",
+    ".avi",
+)
+
+
 def _handle_wikilink_asset(
     token: Token, md_path: Path, lines: Sequence[str]
 ) -> list[QueueItem]:
     """
-    Process a token containing wikilink-style images: ![[path]] or ![[path|alt]].
+    Process a token containing wikilink-style images: ![[path.ext]] or ![[path.ext|alt]].
 
     Args:
         token: Token potentially containing one or more wikilink images.
@@ -218,13 +247,17 @@ def _handle_wikilink_asset(
     Returns:
         List of ``QueueItem`` instances—one for each wikilink image lacking alt text.
     """
-
     items: list[QueueItem] = []
     for match in _WIKILINK_IMG_RE.finditer(token.content):
         src_attr = match.group("src")
         alt_text = match.group("alt")
 
-        if _is_alt_meaningful(alt_text):
+        # Check if it ends with a valid image extension
+        src_lower = src_attr.lower()
+        has_image_ext = any(
+            src_lower.endswith(ext) for ext in WIKILINK_ASSET_EXTENSIONS
+        )
+        if not has_image_ext or _is_alt_meaningful(alt_text):
             continue
 
         # Search for the wikilink pattern in the file
@@ -257,9 +290,7 @@ def _process_file(md_path: Path) -> list[QueueItem]:
 def build_queue(root: Path) -> list[QueueItem]:
     """Return a queue of assets lacking alt text beneath *root*."""
 
-    md_files = utils.get_files(
-        root, filetypes_to_match=(".md",), use_git_ignore=True
-    )
+    md_files = utils.get_files(root, filetypes_to_match=(".md",), use_git_ignore=True)
     queue: list[QueueItem] = []
     for md_file in md_files:
         queue.extend(_process_file(md_file))

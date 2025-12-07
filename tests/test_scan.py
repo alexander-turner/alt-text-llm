@@ -390,3 +390,95 @@ def test_wikilink_line_numbers(tmp_path: Path) -> None:
     line_numbers = {item.line_number for item in queue}
     assert image1_line in line_numbers
     assert image2_line in line_numbers
+
+
+def test_wikilink_document_embeds_not_treated_as_images(tmp_path: Path) -> None:
+    """Test that wikilink document embeds (with # but no image extension) are not treated as images."""
+    md_content = textwrap.dedent(
+        """
+        # Test Document
+        
+        This is a document embed (not an image):
+        ![[output-feedback-can-obfuscate-chain-of-thought#]]
+        
+        This is also a document embed with a heading:
+        ![[another-document#specific-heading]]
+        
+        This is also NOT an image (has # fragment):
+        ![[diagram.png#light-mode]]
+        
+        But this IS a regular image:
+        ![[photo.jpg]]
+        """
+    )
+    _write_md(tmp_path, md_content, "doc_embeds.md")
+
+    queue = scan.build_queue(tmp_path)
+
+    # Should only find the one actual image (photo.jpg)
+    # All wikilinks with # are document/section embeds, not images
+    assert len(queue) == 1
+    assert queue[0].asset_path == "photo.jpg"
+
+    # Should NOT include any embeds with #
+    paths = {item.asset_path for item in queue}
+    assert "output-feedback-can-obfuscate-chain-of-thought#" not in paths
+    assert "another-document#specific-heading" not in paths
+    assert "diagram.png#light-mode" not in paths
+
+
+def test_wikilink_non_image_files_ignored(tmp_path: Path) -> None:
+    """Test that wikilinks to non-image files are ignored."""
+    md_content = textwrap.dedent(
+        """
+        # Test Document
+        
+        Link to a PDF: ![[document.pdf]]
+        
+        Link to a markdown file: ![[notes.md]]
+        
+        Link to a text file: ![[readme.txt]]
+        
+        But this is an image: ![[photo.png]]
+        """
+    )
+    _write_md(tmp_path, md_content, "non_images.md")
+
+    queue = scan.build_queue(tmp_path)
+
+    # Should only find the actual image
+    assert len(queue) == 1
+    assert queue[0].asset_path == "photo.png"
+
+
+@pytest.mark.parametrize(
+    "extension", sorted([ext.lstrip(".") for ext in scan.WIKILINK_ASSET_EXTENSIONS])
+)
+def test_all_image_extensions_recognized(tmp_path: Path, extension: str) -> None:
+    """Test that all IMAGE_EXTENSIONS are properly recognized as images in wikilinks."""
+    filename = f"test_image.{extension}"
+    md_content = f"![[{filename}]]"
+    _write_md(tmp_path, md_content, "extension_test.md")
+
+    queue = scan.build_queue(tmp_path)
+
+    # Should find the image regardless of extension
+    assert len(queue) == 1
+    assert queue[0].asset_path == filename
+
+
+@pytest.mark.parametrize(
+    "extension", sorted([ext.lstrip(".") for ext in scan.WIKILINK_ASSET_EXTENSIONS])
+)
+def test_image_extensions_with_fragment_not_recognized(
+    tmp_path: Path, extension: str
+) -> None:
+    """Test that wikilinks with # fragments are NOT treated as images (they're document embeds)."""
+    filename = f"diagram.{extension}#light-mode"
+    md_content = f"![[{filename}]]"
+    _write_md(tmp_path, md_content, "fragment_test.md")
+
+    queue = scan.build_queue(tmp_path)
+
+    # Should NOT find images with # fragments - they're document embeds
+    assert len(queue) == 0
