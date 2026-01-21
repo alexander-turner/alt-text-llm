@@ -39,3 +39,8 @@ alt-text-llm = "alt_text_llm.main:main"
 
 [project.urls]
 Repository = "https://github.com/alexander-turner/alt-text-llm"
+
+[tool.setuptools]
+# Prevent setuptools from trying to auto-package unrelated top-level directories
+# like ./plans/.
+packages = ["alt_text_llm"]
