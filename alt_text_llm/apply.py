@@ -80,94 +80,76 @@ def _apply_markdown_image_alt(
     return new_line, old_alt
 
 
+def _extract_media_src(tag_name: str, element: object) -> str | None:
+    """Best-effort extraction of the asset URL/path from an HTML media tag."""
+    # BeautifulSoup Tag is duck-typed: has .get and .find
+    src = element.get("src")  # type: ignore[attr-defined]
+    if src:
+        return src
+
+    if tag_name == "video":
+        source = element.find("source")  # type: ignore[attr-defined]
+        return source.get("src") if source else None
+
+    return None
+
+
+def _apply_html_tag_attribute(
+    *,
+    line: str,
+    tag_name: str,
+    asset_path: str,
+    new_value: str,
+    read_old_from: tuple[str, ...],
+    write_attr: str,
+) -> tuple[str, str | None]:
+    """Apply an attribute update to a specific HTML tag matched by src.
+
+    Notes:
+        - Uses BeautifulSoup to parse and rewrite the line.
+        - Matching is done by exact equality against the resolved src (for videos,
+          prefers @src and otherwise first <source src=...> child).
+    """
+    soup = BeautifulSoup(line, "html.parser")
+
+    for el in soup.find_all(tag_name):
+        resolved_src = _extract_media_src(tag_name, el)
+        if resolved_src != asset_path:
+            continue
+
+        old_value = next((el.get(a) for a in read_old_from if el.get(a)), None)
+        el[write_attr] = new_value
+        return str(soup), old_value
+
+    return line, None
+
+
 def _apply_html_image_alt(
     line: str, asset_path: str, new_alt: str
 ) -> tuple[str, str | None]:
-    """
-    Apply alt text to an HTML img tag.
-    
-    Uses BeautifulSoup for robust HTML parsing that handles various quote
-    styles, malformed HTML, and edge cases.
-
-    Args:
-        line: The line containing the img tag
-        asset_path: The asset path to match
-        new_alt: The new alt text to apply
-
-    Returns:
-        Tuple of (modified line, old alt text or None)
-    """
-    soup = BeautifulSoup(line, 'html.parser')
-    old_alt: str | None = None
-    modified = False
-    
-    # Find img tag with matching src
-    for img in soup.find_all('img'):
-        img_src = img.get('src')
-        
-        if img_src == asset_path:
-            # Store old alt if exists
-            old_alt = img.get('alt')
-            
-            # Set alt attribute (BeautifulSoup handles HTML escaping)
-            img['alt'] = new_alt
-            modified = True
-            break
-    
-    if modified:
-        return str(soup), old_alt
-    
-    # No matching image found
-    return line, None
+    """Apply alt text to an HTML img tag."""
+    return _apply_html_tag_attribute(
+        line=line,
+        tag_name="img",
+        asset_path=asset_path,
+        new_value=new_alt,
+        read_old_from=("alt",),
+        write_attr="alt",
+    )
 
 
 def _apply_html_video_label(
     line: str, asset_path: str, new_label: str
 ) -> tuple[str, str | None]:
-    """
-    Apply accessibility label to an HTML video tag.
-
-    Adds or updates aria-label attribute (preferred over title for accessibility).
-    Handles videos with src attribute or <source> children.
-
-    Args:
-        line: The line containing the video tag
-        asset_path: The asset path to match (from src or <source>)
-        new_label: The new accessibility label to apply
-
-    Returns:
-        Tuple of (modified line, old label or None)
-    """
-    soup = BeautifulSoup(line, "html.parser")
-    old_label: str | None = None
-    modified = False
-
-    # Find video tag with matching src
-    for video in soup.find_all("video"):
-        video_src = video.get("src")
-        # Also check source children
-        if not video_src:
-            source = video.find("source")
-            video_src = source.get("src") if source else None
-
-        if video_src == asset_path:
-            # Store old label if exists (check aria-label, title, or aria-describedby)
-            old_label = (
-                video.get("aria-label")
-                or video.get("title")
-                or video.get("aria-describedby")
-            )
-
-            # Set aria-label (preferred for accessibility)
-            video["aria-label"] = new_label
-            modified = True
-            break
-
-    if modified:
-        return str(soup), old_label
-
-    # No matching video found
-    return line, None
+    """Apply accessibility label to an HTML video tag."""
+    return _apply_html_tag_attribute(
+        line=line,
+        tag_name="video",
+        asset_path=asset_path,
+        new_value=new_label,
+        read_old_from=("aria-label", "title", "aria-describedby"),
+        write_attr="aria-label",
+    )
 
 
 def _apply_wikilink_image_alt(
