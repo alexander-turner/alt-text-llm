@@ -5,7 +5,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, exceptions as bs4_exceptions
 from rich.console import Console
 from rich.text import Text
 
@@ -109,8 +109,16 @@ def _apply_html_tag_attribute(
         - Uses BeautifulSoup to parse and rewrite the line.
         - Matching is done by exact equality against the resolved src (for videos,
           prefers @src and otherwise first <source src=...> child).
+        - BeautifulSoup can raise ParserRejectedMarkup on lines containing
+          non-HTML markup that confuses the parser (e.g. regex-like fragments in
+          JS/TS code blocks). In that case we treat the line as non-HTML and
+          leave it unchanged.
     """
-    soup = BeautifulSoup(line, "html.parser")
+    try:
+        soup = BeautifulSoup(line, "html.parser")
+    except bs4_exceptions.ParserRejectedMarkup:
+        print(f"{line=} created a bs4 parsing error! Ignoring.")
+        return line, None
 
     for el in soup.find_all(tag_name):
         resolved_src = _extract_media_src(tag_name, el)

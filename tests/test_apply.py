@@ -180,6 +180,19 @@ def test_apply_html_image_alt_self_closing_no_alt() -> None:
     assert new_line == '<img alt="new alt text" class="icon" src="path/to/image.png"/>'
 
 
+def test_apply_html_image_alt_parser_rejected_markup_is_ignored() -> None:
+    """BeautifulSoup can reject non-HTML markup; we should ignore those lines."""
+    # This is representative of the kind of JS/TS regex literal that triggered
+    # bs4.exceptions.ParserRejectedMarkup in real content.
+    line = "const notePattern = /^\\s*[*_]*note[*_]*:[*_]* (?<text>.*)(?<![*_])[*_]*/gim;"
+    new_line, old_alt = apply._apply_html_image_alt(
+        line, "path/to/image.png", "new alt text"
+    )
+
+    assert old_alt is None
+    assert new_line == line
+
+
 def test_apply_caption_to_file_markdown(
     markdown_file_with_image: Path,
     caption_item: utils.AltGenerationResult,
