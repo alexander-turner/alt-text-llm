@@ -439,43 +439,83 @@ def generate_article_context(
     )
 
 
+def _is_video_asset(asset_path: str) -> bool:
+    """Check if asset is a video file based on extension."""
+    video_extensions = {'.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v'}
+    return Path(asset_path).suffix.lower() in video_extensions
+
+
 def build_prompt(
     queue_item: "scan.QueueItem",
     max_chars: int,
 ) -> str:
-    """Build prompt for LLM caption generation."""
-    base_prompt = textwrap.dedent(
-        """
-        Generate concise alt text for accessibility and SEO. 
-        Describe the intended information of the image clearly and accurately.
-        """
-    ).strip()
+    """Build prompt for LLM caption generation (images or videos)."""
+    is_video = _is_video_asset(queue_item.asset_path)
+    
+    if is_video:
+        base_prompt = textwrap.dedent(
+            """
+            Generate a concise accessibility description for this video.
+            Describe what happens in the video and what information it conveys clearly and accurately.
+            """
+        ).strip()
+    else:
+        base_prompt = textwrap.dedent(
+            """
+            Generate concise alt text for accessibility and SEO.
+            Describe the intended information of the image clearly and accurately.
+            """
+        ).strip()
 
     article_context = generate_article_context(
         queue_item, trim_frontmatter=False
     )
-    main_prompt = textwrap.dedent(
-        f"""
-        Context from {queue_item.markdown_file}:
-        {article_context}
+    
+    if is_video:
+        main_prompt = textwrap.dedent(
+            f"""
+            Context from {queue_item.markdown_file}:
+            {article_context}
 
-        Critical requirements:
-        - Under {max_chars} characters (aim for 1-2 sentences when possible)
-        - Do not include redundant information (e.g. "image of", "picture of", "diagram illustrating", "a diagram of")
-        - Return only the alt text, no quotes
-        - For text-heavy images: transcribe key text content, then describe visual elements
-        - Don't reintroduce acronyms
-        - Don't use line breaks in the alt text
-        - Don't describe purely visual elements unless directly relevant for
-        understanding the content (e.g. don't say "the line in this scientific chart is green")
-        - Describe spatial relationships and visual hierarchy when important
+            Critical requirements:
+            - Under {max_chars} characters (aim for 1-2 sentences when possible)
+            - Do not include redundant phrases (e.g. "video of", "video showing", "a video demonstrating")
+            - Return only the description, no quotes
+            - Describe the key actions, events, or information shown in the video
+            - For instructional videos: focus on what is being taught or demonstrated
+            - For demonstration videos: describe what is being shown and the outcome
+            - Don't use line breaks in the description
+            - Focus on the informational content rather than purely visual details
 
-        Prioritize completeness over brevity - include both textual content and visual description as needed. 
-        While thinking quietly, propose a candidate alt text. Then critique the candidate alt text—
-        does it accurately describe the information the image is meant to convey? 
-        Incorporate the critique into the alt text to improve it. Only output the improved alt text.
-        """
-    ).strip()
+            Prioritize completeness over brevity - describe both the content and purpose of the video.
+            While thinking quietly, propose a candidate description. Then critique it—
+            does it accurately convey what the video demonstrates or explains?
+            Incorporate the critique to improve it. Only output the improved description.
+            """
+        ).strip()
+    else:
+        main_prompt = textwrap.dedent(
+            f"""
+            Context from {queue_item.markdown_file}:
+            {article_context}
+
+            Critical requirements:
+            - Under {max_chars} characters (aim for 1-2 sentences when possible)
+            - Do not include redundant information (e.g. "image of", "picture of", "diagram illustrating", "a diagram of")
+            - Return only the alt text, no quotes
+            - For text-heavy images: transcribe key text content, then describe visual elements
+            - Don't reintroduce acronyms
+            - Don't use line breaks in the alt text
+            - Don't describe purely visual elements unless directly relevant for
+            understanding the content (e.g. don't say "the line in this scientific chart is green")
+            - Describe spatial relationships and visual hierarchy when important
+
+            Prioritize completeness over brevity - include both textual content and visual description as needed.
+            While thinking quietly, propose a candidate alt text. Then critique the candidate alt text—
+            does it accurately describe the information the image is meant to convey?
+            Incorporate the critique into the alt text to improve it. Only output the improved alt text.
+            """
+        ).strip()
 
     return f"{base_prompt}\n{main_prompt}"
 
