@@ -439,10 +439,14 @@ def generate_article_context(
     )
 
 
-def _is_video_asset(asset_path: str) -> bool:
-    """Check if asset is a video file based on extension."""
-    video_extensions = {'.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v'}
-    return Path(asset_path).suffix.lower() in video_extensions
+VIDEO_EXTENSIONS: frozenset[str] = frozenset(
+    {".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v"}
+)
+
+
+def is_video_asset(asset_path: str) -> bool:
+    """Check if *asset_path* is a video file based on extension."""
+    return Path(asset_path).suffix.lower() in VIDEO_EXTENSIONS
 
 
 def build_prompt(
@@ -450,7 +454,7 @@ def build_prompt(
     max_chars: int,
 ) -> str:
     """Build prompt for LLM caption generation (images or videos)."""
-    is_video = _is_video_asset(queue_item.asset_path)
+    is_video = is_video_asset(queue_item.asset_path)
     
     if is_video:
         base_prompt = textwrap.dedent(

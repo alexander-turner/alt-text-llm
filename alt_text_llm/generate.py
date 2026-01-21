@@ -80,10 +80,8 @@ def estimate_cost(
     avg_output_tokens: int = 1500,
 ) -> str:
     """Estimate the cost of processing the queue with the given model."""
-    # Normalize model name for cost lookup
     model_lower = model.lower()
-
-    if model not in MODEL_COSTS:
+    if model_lower not in MODEL_COSTS:
         return f"Cost estimation not available for model: {model}"
 
     cost_info = MODEL_COSTS[model_lower]
@@ -128,8 +126,7 @@ async def _run_llm_async(
     options: GenerateAltTextOptions,
     sem: asyncio.Semaphore,
 ) -> utils.AltGenerationResult:
-    """Download asset, run LLM in a thread; clean up; return suggestion
-    payload."""
+    """Download asset, run LLM in a thread; clean up; return suggestion payload."""
     workspace = Path(tempfile.mkdtemp())
     try:
         async with sem:
