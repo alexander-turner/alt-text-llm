@@ -20,6 +20,7 @@ dependencies = [
     "rich",
     "tqdm",
     "prompt_toolkit",
+    "beautifulsoup4",
 ]
 
 [project.optional-dependencies]

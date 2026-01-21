@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from bs4 import BeautifulSoup
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
@@ -55,6 +56,15 @@ _PLACEHOLDER_ALTS: set[str] = {
     "picture",
 }
 
+_PLACEHOLDER_VIDEO_LABELS: set[str] = {
+    "video",
+    "movie",
+    "clip",
+    "media",
+    "content",
+    "placeholder",
+}
+
 # Common image and video extensions for wikilink detection
 # Using tuple for deterministic ordering in parameterized tests
 WIKILINK_ASSET_EXTENSIONS: tuple[str, ...] = (
@@ -80,9 +90,9 @@ def _is_alt_meaningful(alt: str | None) -> bool:
     return bool(alt_stripped) and alt_stripped not in _PLACEHOLDER_ALTS
 
 
-def _iter_image_tokens(tokens: Sequence[Token]) -> Iterable[Token]:
+def _iter_media_tokens(tokens: Sequence[Token]) -> Iterable[Token]:
     """Yield all tokens (including nested children) that correspond to
-    images."""
+    images or videos."""
 
     stack: list[Token] = list(tokens)
     while stack:
@@ -92,50 +102,66 @@ def _iter_image_tokens(tokens: Sequence[Token]) -> Iterable[Token]:
             yield token
             continue
 
-        if (
-            token.type in {"html_inline", "html_block"}
-            and "<img" in token.content.lower()
-        ):
-            yield token
-            continue
+        if token.type in {"html_inline", "html_block"}:
+            content_lower = token.content.lower()
+            if "<img" in content_lower or "<video" in content_lower:
+                yield token
+                continue
 
-        # Check for wikilink images: ![[path]] or ![[path|alt]]
-        # Yield inline tokens containing wikilinks for processing
         if token.type == "inline" and "![[" in token.content:
             yield token
-            # Still traverse children to find regular markdown images
 
-        # Depth-first traversal of the token tree
         if token.children:
             stack.extend(token.children)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-# Wikilink image pattern: ![[path]] or ![[path|alt]]
 _WIKILINK_IMG_RE = re.compile(r"!\[\[(?P<src>[^\]|]+)(?:\|(?P<alt>[^\]]*))?\]\]")
 
-_ALT_RE = re.compile(r"alt=\"(?P<alt>[^\"]*)\"", re.IGNORECASE)
 
-# ``markdown_it`` represents HTML img tags inside an ``html_inline`` or
-# ``html_block`` token. Use a lightweight regex so we do not pull in another
-# HTML parser just for <img>.
-_IMG_TAG_RE = re.compile(
-    r"<img\s+[^>]*src=\"(?P<src>[^\"]+)\"[^>]*>", re.IGNORECASE | re.DOTALL
-)
+def _is_video_label_meaningful(label: str | None) -> bool:
+    if label is None:
+        return False
+    label_stripped = label.strip().lower()
+    return bool(label_stripped) and label_stripped not in _PLACEHOLDER_VIDEO_LABELS
 
 
 def _extract_html_img_info(token: Token) -> list[tuple[str, str | None]]:
     """Return list of (src, alt) pairs for each <img> within the token."""
-
+    soup = BeautifulSoup(token.content, "html.parser")
     infos: list[tuple[str, str | None]] = []
-    for m in _IMG_TAG_RE.finditer(token.content):
-        src = m.group("src")
-        alt_match = _ALT_RE.search(m.group(0))
-        alt: str | None = alt_match.group("alt") if alt_match else None
-        infos.append((src, alt))
+
+    for img in soup.find_all("img"):
+        src = img.get("src")
+        alt = img.get("alt")
+        if src:
+            infos.append((src, alt))
+
+    return infos
+
+
+def _extract_html_video_info(token: Token) -> list[tuple[str, dict[str, str | None]]]:
+    """Return list of (src, accessibility_attrs) for each <video>.
+    
+    Extracts src from video tag or first <source> child.
+    Returns dict with aria-label, title, aria-describedby values.
+    """
+    soup = BeautifulSoup(token.content, "html.parser")
+    infos: list[tuple[str, dict[str, str | None]]] = []
+
+    for video in soup.find_all("video"):
+        src = video.get("src")
+        if not src:
+            source = video.find("source")
+            src = source.get("src") if source else None
+
+        if src:
+            accessibility_attrs = {
+                "aria_label": video.get("aria-label"),
+                "title": video.get("title"),
+                "aria_describedby": video.get("aria-describedby"),
+            }
+            infos.append((src, accessibility_attrs))
+
     return infos
 
 
@@ -215,6 +241,36 @@ def _handle_html_asset(
     return items
 
 
+def _handle_html_video(
+    token: Token, md_path: Path, lines: Sequence[str]
+) -> list[QueueItem]:
+    """
+    Process an ``html_inline`` or ``html_block`` token containing ``<video>``.
+
+    Args:
+        token: Token potentially containing one or more ``<video>`` tags.
+        md_path: Current markdown file path.
+        lines: Contents of *md_path* split by lines.
+
+    Returns:
+        List of ``QueueItem`` instances—one for each ``<video>`` lacking accessibility.
+    """
+    items: list[QueueItem] = []
+
+    for src_attr, accessibility_attrs in _extract_html_video_info(token):
+        # Check if any accessibility attribute is present and meaningful
+        has_accessibility = any(
+            _is_video_label_meaningful(attr) for attr in accessibility_attrs.values()
+        )
+        if has_accessibility:
+            continue
+
+        line_no = _get_line_number(token, lines, src_attr)
+        items.append(_create_queue_item(md_path, src_attr, line_no, lines))
+
+    return items
+
+
 def _handle_wikilink_asset(
     token: Token, md_path: Path, lines: Sequence[str]
 ) -> list[QueueItem]:
@@ -257,13 +313,28 @@ def _process_file(md_path: Path) -> list[QueueItem]:
 
     items: list[QueueItem] = []
     tokens = md.parse(source_text)
-    for token in _iter_image_tokens(tokens):
+    processed_inline_videos = set()
+    
+    for token in _iter_media_tokens(tokens):
         if token.type == "image":
             token_items = _handle_md_asset(token, md_path, lines)
         elif token.type in {"html_inline", "html_block"}:
-            token_items = _handle_html_asset(token, md_path, lines)
+            soup = BeautifulSoup(token.content, "html.parser")
+
+            if soup.find("img"):
+                token_items = _handle_html_asset(token, md_path, lines)
+            elif soup.find("video"):
+                token_items = _handle_html_video(token, md_path, lines)
+            else:
+                token_items = []
+        elif token.type == "inline":
+            soup = BeautifulSoup(token.content, "html.parser")
+            if soup.find("video") and id(token) not in processed_inline_videos:
+                processed_inline_videos.add(id(token))
+                token_items = _handle_html_video(token, md_path, lines)
+            else:
+                token_items = _handle_wikilink_asset(token, md_path, lines)
         else:
-            # Handle wikilink images
             token_items = _handle_wikilink_asset(token, md_path, lines)
         items.extend(token_items)
     return items

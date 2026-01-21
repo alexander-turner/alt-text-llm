@@ -1,8 +1,13 @@
 import textwrap
 from pathlib import Path
-from markdown_it.token import Token
 
 import pytest
+from markdown_it.token import Token
+import tempfile
+from pathlib import Path
+
+from alt_text_llm.scan import build_queue, _is_video_label_meaningful
+
 
 from alt_text_llm import scan
 
@@ -482,3 +487,54 @@ def test_image_extensions_with_fragment_not_recognized(
 
     # Should NOT find images with # fragments - they're document embeds
     assert len(queue) == 0
+
+
+@pytest.mark.parametrize(
+    "label,expected",
+    [
+        (None, False),
+        ("", False),
+        ("   ", False),
+        ("video", False),
+        ("movie", False),
+        ("VIDEO", False),
+        ("A meaningful video description", True),
+    ],
+)
+def test_is_video_label_meaningful(label: str | None, expected: bool):
+    assert scan._is_video_label_meaningful(label) == expected
+
+
+@pytest.mark.parametrize(
+    "video_html,should_detect",
+    [
+        ('<video src="demo.mp4"></video>', True),
+        ('<video src="demo.mp4" aria-label="Good description"></video>', False),
+        ('<video src="demo.mp4" title="Tutorial"></video>', False),
+        ('<video src="demo.mp4" aria-describedby="desc"></video>', False),
+        ('<video src="demo.mp4" aria-label="video"></video>', True),
+        ("<video src='demo.mp4'></video>", True),
+    ],
+)
+def test_video_detection(tmp_path: Path, video_html: str, should_detect: bool):
+    md_file = tmp_path / "test.md"
+    md_file.write_text(f"{video_html}\n")
+
+    queue = scan.build_queue(tmp_path)
+    if should_detect:
+        assert len(queue) == 1
+        assert "demo.mp4" in queue[0].asset_path
+    else:
+        assert len(queue) == 0
+
+
+def test_mixed_images_and_videos(tmp_path: Path):
+    md_file = tmp_path / "test.md"
+    md_file.write_text(
+        "![](image.png)\n" '<video src="demo.mp4"></video>\n' '<img src="photo.jpg">\n'
+    )
+
+    queue = scan.build_queue(tmp_path)
+    assert len(queue) == 3
+    paths = {item.asset_path for item in queue}
+    assert paths == {"image.png", "demo.mp4", "photo.jpg"}
