@@ -177,10 +177,7 @@ def test_apply_html_image_alt_self_closing_no_alt() -> None:
     )
 
     assert old_alt is None
-    assert (
-        new_line
-        == '<img alt="new alt text" src="path/to/image.png" class="icon"/>'
-    )
+    assert new_line == '<img alt="new alt text" src="path/to/image.png" class="icon"/>'
 
 
 def test_apply_caption_to_file_markdown(
@@ -267,9 +264,7 @@ def test_apply_captions_dry_run(
     assert markdown_file_with_image.read_text() == original_content
 
 
-def test_apply_captions_multiple_images(
-    temp_dir: Path, console: Console
-) -> None:
+def test_apply_captions_multiple_images(temp_dir: Path, console: Console) -> None:
     """Test applying captions to multiple images in same file."""
     # Create a test markdown file
     md_path = temp_dir / "test.md"
@@ -530,9 +525,7 @@ def test_wikilink_image_alt_with_special_chars(
     expected_escaped: str,
 ) -> None:
     """Test applying wikilink alt text with special characters (uses markdown escaping)."""
-    new_line, old_alt = apply._apply_wikilink_image_alt(
-        line, "image.png", new_alt
-    )
+    new_line, old_alt = apply._apply_wikilink_image_alt(line, "image.png", new_alt)
     assert old_alt == expected_old_alt
     expected_line = line.replace(
         f"![[image.png{f'|{expected_old_alt}' if expected_old_alt else ''}]]",
@@ -598,9 +591,7 @@ def test_display_unused_entries_sorted() -> None:
 
     result = output.getvalue()
     lines = [
-        line.strip()
-        for line in result.splitlines()
-        if ":" in line and ".md" in line
+        line.strip() for line in result.splitlines() if ":" in line and ".md" in line
     ]
     assert len(lines) == 3
     assert "a_file.md: a_image.png" in lines[0]
@@ -819,16 +810,11 @@ Image: ![old alt](image.png)
 
     assert applied_count == 1
     new_content = md_path.read_text()
-    assert (
-        "![First line ... Second line ... Third line](image.png)"
-        in new_content
-    )
+    assert "![First line ... Second line ... Third line](image.png)" in new_content
     assert "\n" not in new_content.split("![")[1].split("]")[0]
 
 
-def test_apply_caption_with_none_line_number(
-    temp_dir: Path, console: Console
-) -> None:
+def test_apply_caption_with_none_line_number(temp_dir: Path, console: Console) -> None:
     """Test that apply works when line_number is None."""
     md_path = temp_dir / "test.md"
     content = """# Test
@@ -861,9 +847,7 @@ More content.
     assert "![old alt](image.png)" not in new_content
 
 
-def test_apply_caption_replaces_all_instances(
-    temp_dir: Path, console: Console
-) -> None:
+def test_apply_caption_replaces_all_instances(temp_dir: Path, console: Console) -> None:
     """Test that all instances of an asset get replaced."""
     md_path = temp_dir / "test.md"
     content = """# Test
@@ -901,9 +885,7 @@ Third instance: ![](image.png)
     assert "old alt 2" not in new_content
 
 
-def test_apply_caption_with_mixed_formats(
-    temp_dir: Path, console: Console
-) -> None:
+def test_apply_caption_with_mixed_formats(temp_dir: Path, console: Console) -> None:
     """Test that all formats (markdown, HTML, wikilink) get replaced."""
     md_path = temp_dir / "test.md"
     content = """# Test
@@ -938,3 +920,195 @@ Wikilink: ![[image.png|old wikilink alt]]
     assert "old alt" not in new_content
     assert "old html alt" not in new_content
     assert "old wikilink alt" not in new_content
+
+
+"""Tests for video label application functionality."""
+
+
+class TestApplyHtmlVideoLabel:
+    """Test applying aria-label to HTML video elements."""
+
+    def test_add_aria_label_to_video_without_attributes(self):
+        """Should add aria-label to video without any accessibility attributes."""
+        line = '<video src="demo.mp4" controls></video>'
+        new_line, old_label = apply._apply_html_video_label(
+            line, "demo.mp4", "Product demo"
+        )
+
+        assert 'aria-label="Product demo"' in new_line
+        assert old_label is None
+
+    def test_replace_existing_aria_label(self):
+        """Should replace existing aria-label."""
+        line = '<video src="demo.mp4" aria-label="old label"></video>'
+        new_line, old_label = apply._apply_html_video_label(
+            line, "demo.mp4", "New description"
+        )
+
+        assert 'aria-label="New description"' in new_line
+        assert old_label == "old label"
+
+    def test_replace_existing_title(self):
+        """Should replace title with aria-label (aria-label is preferred)."""
+        line = '<video src="demo.mp4" title="old title"></video>'
+        new_line, old_label = apply._apply_html_video_label(
+            line, "demo.mp4", "New description"
+        )
+
+        assert 'aria-label="New description"' in new_line
+        assert old_label == "old title"
+
+    def test_video_with_source_child(self):
+        """Should handle video with <source> child."""
+        line = '<video controls><source src="demo.mp4" type="video/mp4"></video>'
+        new_line, old_label = apply._apply_html_video_label(
+            line, "demo.mp4", "Tutorial video"
+        )
+
+        assert 'aria-label="Tutorial video"' in new_line
+        assert old_label is None
+
+    def test_video_with_multiple_sources(self):
+        """Should match first source."""
+        line = """<video controls>
+  <source src="demo.mp4" type="video/mp4">
+  <source src="demo.webm" type="video/webm">
+</video>"""
+        new_line, old_label = apply._apply_html_video_label(
+            line, "demo.mp4", "Demo video"
+        )
+
+        assert 'aria-label="Demo video"' in new_line
+        assert old_label is None
+
+    def test_no_match_returns_unchanged(self):
+        """Should return unchanged line if video not found."""
+        line = '<video src="other.mp4"></video>'
+        new_line, old_label = apply._apply_html_video_label(
+            line, "demo.mp4", "Description"
+        )
+
+        assert new_line == line
+        assert old_label is None
+
+    def test_video_with_aria_describedby(self):
+        """Should capture aria-describedby as old label."""
+        line = '<video src="demo.mp4" aria-describedby="desc-1"></video>'
+        new_line, old_label = apply._apply_html_video_label(
+            line, "demo.mp4", "New label"
+        )
+
+        assert 'aria-label="New label"' in new_line
+        assert old_label == "desc-1"
+
+    def test_video_with_special_characters_in_label(self):
+        """Should handle special characters in label."""
+        line = '<video src="demo.mp4"></video>'
+        new_line, old_label = apply._apply_html_video_label(
+            line, "demo.mp4", 'Tutorial: "Getting Started" & More'
+        )
+
+        assert "aria-label=" in new_line
+        assert old_label is None
+
+    def test_video_with_url_src(self):
+        """Should handle videos with full URLs."""
+        url = "https://example.com/video.mp4"
+        line = f'<video src="{url}"></video>'
+        new_line, old_label = apply._apply_html_video_label(line, url, "Remote video")
+
+        assert 'aria-label="Remote video"' in new_line
+        assert old_label is None
+
+    def test_video_with_single_quotes(self):
+        """Should handle single quotes in src."""
+        line = "<video src='demo.mp4'></video>"
+        new_line, old_label = apply._apply_html_video_label(
+            line, "demo.mp4", "Description"
+        )
+
+        assert 'aria-label="Description"' in new_line
+        assert old_label is None
+
+    def test_video_with_no_quotes(self):
+        """Should handle unquoted src attribute."""
+        line = "<video src=demo.mp4></video>"
+        new_line, old_label = apply._apply_html_video_label(
+            line, "demo.mp4", "Description"
+        )
+
+        assert 'aria-label="Description"' in new_line
+        assert old_label is None
+
+    def test_multiline_video(self):
+        """Should handle multi-line video tags."""
+        line = """<video
+  src="demo.mp4"
+  controls
+  autoplay>
+</video>"""
+        new_line, old_label = apply._apply_html_video_label(line, "demo.mp4", "Demo")
+
+        assert 'aria-label="Demo"' in new_line
+        assert old_label is None
+
+    def test_video_with_many_attributes(self):
+        """Should handle video with many attributes."""
+        line = '<video src="demo.mp4" controls autoplay loop muted playsinline style="width: 80%"></video>'
+        new_line, old_label = apply._apply_html_video_label(
+            line, "demo.mp4", "Looping demo"
+        )
+
+        assert 'aria-label="Looping demo"' in new_line
+        assert old_label is None
+
+    def test_preserves_other_attributes(self):
+        """Should preserve all other video attributes."""
+        line = '<video src="demo.mp4" controls autoplay class="video-player"></video>'
+        new_line, old_label = apply._apply_html_video_label(line, "demo.mp4", "Demo")
+
+        assert "controls" in new_line
+        assert "autoplay" in new_line
+        assert 'class="video-player"' in new_line
+        assert old_label is None
+
+    def test_multiple_videos_in_line(self):
+        """Should only modify the matching video."""
+        line = '<video src="demo1.mp4"></video><video src="demo2.mp4"></video>'
+        new_line, old_label = apply._apply_html_video_label(
+            line, "demo1.mp4", "First video"
+        )
+
+        assert 'aria-label="First video"' in new_line
+        # Should only modify the first video
+        assert new_line.count("aria-label") == 1
+        assert old_label is None
+
+    def test_empty_label(self):
+        """Should handle empty label string."""
+        line = '<video src="demo.mp4"></video>'
+        new_line, old_label = apply._apply_html_video_label(line, "demo.mp4", "")
+
+        assert 'aria-label=""' in new_line
+        assert old_label is None
+
+    def test_label_with_newlines(self):
+        """Should handle labels with newlines."""
+        line = '<video src="demo.mp4"></video>'
+        new_line, old_label = apply._apply_html_video_label(
+            line, "demo.mp4", "Multi\nline\ndescription"
+        )
+
+        assert "aria-label=" in new_line
+        assert old_label is None
+
+    def test_video_with_closing_tag(self):
+        """Should handle video with explicit closing tag."""
+        line = '<video src="demo.mp4">Your browser does not support video.</video>'
+        new_line, old_label = apply._apply_html_video_label(
+            line, "demo.mp4", "Demo video"
+        )
+
+        assert 'aria-label="Demo video"' in new_line
+        assert "Your browser does not support video." in new_line
+        assert old_label is None

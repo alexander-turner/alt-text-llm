@@ -5,6 +5,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
+from bs4 import BeautifulSoup
 from rich.console import Console
 from rich.text import Text
 
@@ -144,6 +145,55 @@ def _apply_html_image_alt(
     return new_line, old_alt
 
 
+def _apply_html_video_label(
+    line: str, asset_path: str, new_label: str
+) -> tuple[str, str | None]:
+    """
+    Apply accessibility label to an HTML video tag.
+
+    Adds or updates aria-label attribute (preferred over title for accessibility).
+    Handles videos with src attribute or <source> children.
+
+    Args:
+        line: The line containing the video tag
+        asset_path: The asset path to match (from src or <source>)
+        new_label: The new accessibility label to apply
+
+    Returns:
+        Tuple of (modified line, old label or None)
+    """
+    soup = BeautifulSoup(line, "html.parser")
+    old_label: str | None = None
+    modified = False
+
+    # Find video tag with matching src
+    for video in soup.find_all("video"):
+        video_src = video.get("src")
+        # Also check source children
+        if not video_src:
+            source = video.find("source")
+            video_src = source.get("src") if source else None
+
+        if video_src == asset_path:
+            # Store old label if exists (check aria-label, title, or aria-describedby)
+            old_label = (
+                video.get("aria-label")
+                or video.get("title")
+                or video.get("aria-describedby")
+            )
+
+            # Set aria-label (preferred for accessibility)
+            video["aria-label"] = new_label
+            modified = True
+            break
+
+    if modified:
+        return str(soup), old_label
+
+    # No matching video found
+    return line, None
+
+
 def _apply_wikilink_image_alt(
     line: str, asset_path: str, new_alt: str
 ) -> tuple[str, str | None]:
@@ -224,9 +274,7 @@ def _try_all_image_formats(
     normalized_alt = re.sub(r"(\r\n|\r|\n)+", " ... ", new_alt)
 
     # Try markdown image first
-    modified_line, old_alt = _apply_markdown_image_alt(
-        line, asset_path, normalized_alt
-    )
+    modified_line, old_alt = _apply_markdown_image_alt(line, asset_path, normalized_alt)
 
     # If no change, try wikilink image
     if modified_line == line:
@@ -236,7 +284,11 @@ def _try_all_image_formats(
 
     # If no change, try HTML image
     if modified_line == line:
-        modified_line, old_alt = _apply_html_image_alt(
+        modified_line, old_alt = _apply_html_image_alt(line, asset_path, normalized_alt)
+
+    # If no change, try HTML video
+    if modified_line == line:
+        modified_line, old_alt = _apply_html_video_label(
             line, asset_path, normalized_alt
         )
 
@@ -472,16 +524,12 @@ def apply_captions(
     applied_count = 0
     for md_file, items in by_file.items():
         md_path = Path(md_file)
-        applied_count += _process_file_captions(
-            md_path, items, console, dry_run
-        )
+        applied_count += _process_file_captions(md_path, items, console, dry_run)
 
     return applied_count
 
 
-def apply_from_captions_file(
-    captions_file: Path, dry_run: bool = False
-) -> None:
+def apply_from_captions_file(captions_file: Path, dry_run: bool = False) -> None:
     """
     Load captions from file and apply them to markdown files.
 
@@ -492,9 +540,7 @@ def apply_from_captions_file(
     console = Console()
 
     if not captions_file.exists():
-        console.print(
-            f"[red]Error: Captions file not found: {captions_file}[/red]"
-        )
+        console.print(f"[red]Error: Captions file not found: {captions_file}[/red]")
         return
 
     applied_count = apply_captions(captions_file, console, dry_run=dry_run)
@@ -505,6 +551,4 @@ def apply_from_captions_file(
             f"\n[blue]Dry run complete: {applied_count} captions would be applied[/blue]"
         )
     else:
-        console.print(
-            f"\n[green]Successfully applied {applied_count} captions[/green]"
-        )
+        console.print(f"\n[green]Successfully applied {applied_count} captions[/green]")
