@@ -215,24 +215,6 @@ def _handle_html_asset(
     return items
 
 
-WIKILINK_ASSET_EXTENSIONS: tuple[str, ...] = (
-    ".avif",
-    ".bmp",
-    ".gif",
-    ".ico",
-    ".jpeg",
-    ".jpg",
-    ".png",
-    ".svg",
-    ".webp",
-    ".gif",
-    ".mp4",
-    ".webm",
-    ".mov",
-    ".avi",
-)
-
-
 def _handle_wikilink_asset(
     token: Token, md_path: Path, lines: Sequence[str]
 ) -> list[QueueItem]:

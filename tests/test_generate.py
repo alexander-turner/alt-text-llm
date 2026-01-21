@@ -71,7 +71,7 @@ def test_estimate_cost_invalid_model() -> None:
     """Test cost estimation with invalid model returns informative message."""
     result = generate.estimate_cost("invalid-model", 10)
 
-    assert result.startswith("Can't estimate cost for unknown model")
+    assert result.startswith("Cost estimation not available for model")
 
 
 def test_run_llm_success(temp_dir: Path) -> None:

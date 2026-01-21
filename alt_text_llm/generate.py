@@ -83,18 +83,13 @@ def estimate_cost(
     # Normalize model name for cost lookup
     model_lower = model.lower()
 
-    if model_lower in MODEL_COSTS:
-        cost_info = MODEL_COSTS[model_lower]
-    else:
-        return f"Can't estimate cost for unknown model: {model}. Available models: {MODEL_COSTS.keys()}"
+    if model not in MODEL_COSTS:
+        return f"Cost estimation not available for model: {model}"
 
-    # Calculate costs
+    cost_info = MODEL_COSTS[model_lower]
     input_cost = (avg_prompt_tokens * queue_count / 1000) * cost_info["input"]
-    output_cost = (avg_output_tokens * queue_count / 1000) * cost_info[
-        "output"
-    ]
+    output_cost = (avg_output_tokens * queue_count / 1000) * cost_info["output"]
     total_cost = input_cost + output_cost
-
     return f"Estimated cost: ${total_cost:.3f} (${input_cost:.3f} input + ${output_cost:.3f} output)"
 
 
@@ -110,9 +105,7 @@ def filter_existing_captions(
         existing_captions.update(utils.load_existing_captions(output_path))
     original_count = len(queue_items)
     filtered_items = [
-        item
-        for item in queue_items
-        if item.asset_path not in existing_captions
+        item for item in queue_items if item.asset_path not in existing_captions
     ]
     skipped_count = original_count - len(filtered_items)
     if skipped_count > 0 and verbose:
