@@ -4,7 +4,6 @@ Scan markdown files for assets without meaningful alt text.
 This script produces a JSON work-queue.
 """
 
-import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -115,9 +114,6 @@ def _iter_media_tokens(tokens: Sequence[Token]) -> Iterable[Token]:
             stack.extend(token.children)
 
 
-_WIKILINK_IMG_RE = re.compile(r"!\[\[(?P<src>[^\]|]+)(?:\|(?P<alt>[^\]]*))?\]\]")
-
-
 def _is_video_label_meaningful(label: str | None) -> bool:
     if label is None:
         return False
@@ -141,7 +137,6 @@ def _extract_html_img_info(token: Token) -> list[tuple[str, str | None]]:
 
 def _extract_html_video_info(token: Token) -> list[tuple[str, dict[str, str | None]]]:
     """Return list of (src, accessibility_attrs) for each <video>.
-    
     Extracts src from video tag or first <source> child.
     Returns dict with aria-label, title, aria-describedby values.
     """
@@ -271,34 +266,57 @@ def _handle_html_video(
     return items
 
 
+def _iter_wikilink_images(content: str) -> Iterable[tuple[str, str | None]]:
+    """Yield (src, alt) pairs for each Obsidian-style wikilink image.
+
+    Supports:
+      - ![[path.ext]]
+      - ![[path.ext|alt]]
+    """
+
+    idx = 0
+    while True:
+        start = content.find("![[", idx)
+        if start == -1:
+            return
+
+        end = content.find("]]", start + 3)
+        if end == -1:
+            return
+
+        inner = content[start + 3 : end]
+        if not inner:
+            idx = end + 2
+            continue
+
+        if "|" in inner:
+            src, alt = inner.split("|", 1)
+        else:
+            src, alt = inner, None
+
+        src = src.strip()
+        alt = alt.strip() if alt is not None else None
+
+        if src:
+            yield src, alt
+
+        idx = end + 2
+
+
 def _handle_wikilink_asset(
     token: Token, md_path: Path, lines: Sequence[str]
 ) -> list[QueueItem]:
-    """
-    Process a token containing wikilink-style images: ![[path.ext]] or ![[path.ext|alt]].
+    """Process a token containing wikilink-style images: ![[path.ext]] or ![[path.ext|alt]]."""
 
-    Args:
-        token: Token potentially containing one or more wikilink images.
-        md_path: Current markdown file path.
-        lines: Contents of *md_path* split by lines.
-
-    Returns:
-        List of ``QueueItem`` instances—one for each wikilink image lacking alt text.
-    """
     items: list[QueueItem] = []
-    for match in _WIKILINK_IMG_RE.finditer(token.content):
-        src_attr = match.group("src")
-        alt_text = match.group("alt")
-
-        # Check if it ends with a valid image extension
+    for src_attr, alt_text in _iter_wikilink_images(token.content):
         src_lower = src_attr.lower()
-        has_image_ext = any(
+        has_asset_ext = any(
             src_lower.endswith(ext) for ext in WIKILINK_ASSET_EXTENSIONS
         )
-        if not has_image_ext or _is_alt_meaningful(alt_text):
+        if not has_asset_ext or _is_alt_meaningful(alt_text):
             continue
 
-        # Search for the wikilink pattern in the file
         search_snippet = f"![[{src_attr}"
         line_no = _get_line_number(token, lines, search_snippet)
         items.append(_create_queue_item(md_path, src_attr, line_no, lines))
@@ -314,7 +332,7 @@ def _process_file(md_path: Path) -> list[QueueItem]:
     items: list[QueueItem] = []
     tokens = md.parse(source_text)
     processed_inline_videos = set()
-    
+
     for token in _iter_media_tokens(tokens):
         if token.type == "image":
             token_items = _handle_md_asset(token, md_path, lines)
