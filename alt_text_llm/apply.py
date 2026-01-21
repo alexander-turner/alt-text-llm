@@ -85,6 +85,9 @@ def _apply_html_image_alt(
 ) -> tuple[str, str | None]:
     """
     Apply alt text to an HTML img tag.
+    
+    Uses BeautifulSoup for robust HTML parsing that handles various quote
+    styles, malformed HTML, and edge cases.
 
     Args:
         line: The line containing the img tag
@@ -94,55 +97,28 @@ def _apply_html_image_alt(
     Returns:
         Tuple of (modified line, old alt text or None)
     """
-    # Escape special regex chars in asset_path
-    escaped_path = re.escape(asset_path)
-
-    # Match img tag with this src (handles both > and /> endings)
-    # Capture group 1: attributes, Group 2: whitespace before closing, Group 3: closing slash
-    img_pattern = rf'<img\s+([^>]*src="{escaped_path}"[^/>]*?)(\s*)(/?)>'
-
-    match = re.search(img_pattern, line, re.IGNORECASE | re.DOTALL)
-    if not match:
-        return line, None
-
-    img_attrs = match.group(1).rstrip()  # Remove trailing whitespace
+    soup = BeautifulSoup(line, 'html.parser')
     old_alt: str | None = None
-    whitespace_before_close = match.group(2)  # Whitespace before closing
-    closing_slash = match.group(3)  # Either "/" or ""
-
-    # Check if alt attribute exists
-    alt_pattern = r'alt="([^"]*)"'
-    alt_match = re.search(alt_pattern, img_attrs, re.IGNORECASE)
-
-    # Escape special characters in alt text for HTML
-    escaped_alt = _escape_html_alt_text(new_alt)
-
-    if alt_match:
-        old_alt = alt_match.group(1)
-        # Replace existing alt - use lambda to avoid backslash interpretation
-        new_attrs = re.sub(
-            alt_pattern,
-            lambda m: f'alt="{escaped_alt}"',
-            img_attrs,
-            count=1,
-            flags=re.IGNORECASE,
-        )
-    else:
-        # Add alt attribute (insert before src or at the end)
-        # Use lambda to avoid backslash interpretation in replacement
-        new_attrs = re.sub(
-            rf'(src="{escaped_path}")',
-            lambda m: f'alt="{escaped_alt}" {m.group(1)}',
-            img_attrs,
-            count=1,
-            flags=re.IGNORECASE,
-        )
-
-    # Reconstruct the img tag with proper closing, preserving original whitespace
-    old_tag = f"<img {img_attrs}{whitespace_before_close}{closing_slash}>"
-    new_tag = f"<img {new_attrs}{whitespace_before_close}{closing_slash}>"
-    new_line = line.replace(old_tag, new_tag)
-    return new_line, old_alt
+    modified = False
+    
+    # Find img tag with matching src
+    for img in soup.find_all('img'):
+        img_src = img.get('src')
+        
+        if img_src == asset_path:
+            # Store old alt if exists
+            old_alt = img.get('alt')
+            
+            # Set alt attribute (BeautifulSoup handles HTML escaping)
+            img['alt'] = new_alt
+            modified = True
+            break
+    
+    if modified:
+        return str(soup), old_alt
+    
+    # No matching image found
+    return line, None
 
 
 def _apply_html_video_label(
