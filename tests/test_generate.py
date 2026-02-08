@@ -87,13 +87,16 @@ def test_run_llm_success(temp_dir: Path) -> None:
     mock_result.stdout = "Generated alt text"
     mock_result.stderr = ""
 
-    with patch("subprocess.run", return_value=mock_result) as mock_run:
+    with (
+        patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/llm"),
+        patch("subprocess.run", return_value=mock_result) as mock_run,
+    ):
         result = generate._run_llm(attachment, prompt, model, timeout)
 
         assert result == "Generated alt text"
         mock_run.assert_called_once()
         call_args = mock_run.call_args[0][0]
-        assert "llm" in call_args[0]
+        assert call_args[0] == "/usr/bin/llm"
         assert "-m" in call_args
         assert model in call_args
         assert "-a" in call_args
@@ -142,46 +145,30 @@ def test_filter_existing_captions_filters_items(
     console_mock.print.assert_called_once()
 
 
-def test_run_llm_failure(temp_dir: Path) -> None:
-    """Test LLM execution failure."""
+@pytest.mark.parametrize(
+    "returncode,stdout,stderr,expected_match",
+    [
+        pytest.param(1, "", "LLM error", "Caption generation failed", id="failure"),
+        pytest.param(0, "   ", "", "LLM returned empty caption", id="empty_output"),
+    ],
+)
+def test_run_llm_error_cases(
+    temp_dir: Path, returncode: int, stdout: str, stderr: str, expected_match: str,
+) -> None:
+    """Test LLM execution failure and empty output."""
     attachment = temp_dir / "test.jpg"
     attachment.write_bytes(b"fake image")
-    prompt = "Generate alt text for this image"
-    model = "gemini-2.5-flash"
-    timeout = 60
-
     mock_result = Mock()
-    mock_result.returncode = 1
-    mock_result.stdout = ""
-    mock_result.stderr = "LLM error"
+    mock_result.returncode = returncode
+    mock_result.stdout = stdout
+    mock_result.stderr = stderr
 
-    with patch("subprocess.run", return_value=mock_result):
-        with pytest.raises(
-            utils.AltGenerationError,
-            match="Caption generation failed",
-        ):
-            generate._run_llm(attachment, prompt, model, timeout)
-
-
-def test_run_llm_empty_output(temp_dir: Path) -> None:
-    """Test LLM returning empty output."""
-    attachment = temp_dir / "test.jpg"
-    attachment.write_bytes(b"fake image")
-    prompt = "Generate alt text for this image"
-    model = "gemini-2.5-flash"
-    timeout = 60
-
-    mock_result = Mock()
-    mock_result.returncode = 0
-    mock_result.stdout = "   "  # Only whitespace
-    mock_result.stderr = ""
-
-    with patch("subprocess.run", return_value=mock_result):
-        with pytest.raises(
-            utils.AltGenerationError,
-            match="LLM returned empty caption",
-        ):
-            generate._run_llm(attachment, prompt, model, timeout)
+    with (
+        patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/llm"),
+        patch("subprocess.run", return_value=mock_result),
+        pytest.raises(utils.AltGenerationError, match=expected_match),
+    ):
+        generate._run_llm(attachment, "Generate alt text", "gemini-2.5-flash", 60)
 
 
 @pytest.mark.asyncio
@@ -259,3 +246,65 @@ async def test_async_generate_suggestions(
     }
     actual_suggestions = {result.suggested_alt for result in results}
     assert actual_suggestions == expected_suggestions
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_generate_empty_queue(temp_dir: Path) -> None:
+    """Async generation with empty queue should return empty list."""
+    options = generate.GenerateAltTextOptions(
+        root=temp_dir,
+        model="test",
+        max_chars=100,
+        timeout=10,
+        output_path=temp_dir / "out.json",
+    )
+    results = await generate.async_generate_suggestions([], options)
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_async_generate_with_individual_errors(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Async generation should handle individual failures gracefully."""
+    queue_items = [
+        scan.QueueItem(
+            markdown_file="test.md",
+            asset_path=f"image{i}.jpg",
+            line_number=i + 1,
+            context_snippet=f"ctx{i}",
+        )
+        for i in range(5)
+    ]
+
+    def failing_download(qi, workspace):
+        if "image2" in qi.asset_path:
+            raise FileNotFoundError("Not found")
+        target = workspace / "asset.jpg"
+        target.write_bytes(b"data")
+        return target
+
+    def fake_run_llm(attachment, prompt, model, timeout):
+        return "caption"
+
+    def fake_context(qi, **kwargs):
+        return qi.context_snippet
+
+    monkeypatch.setattr(utils, "download_asset", failing_download)
+    monkeypatch.setattr(generate, "_run_llm", fake_run_llm)
+    monkeypatch.setattr(utils, "generate_article_context", fake_context)
+
+    options = generate.GenerateAltTextOptions(
+        root=temp_dir,
+        model="test",
+        max_chars=100,
+        timeout=10,
+        output_path=temp_dir / "out.json",
+    )
+    results = await generate.async_generate_suggestions(queue_items, options)
+    assert len(results) == 4  # 4 out of 5 should succeed

@@ -5,7 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from alt_text_llm import scan
+from alt_text_llm import scan, utils
+
+
+@pytest.fixture(autouse=True)
+def _clear_executable_cache():
+    """Clear the executable path cache between tests."""
+    utils._executable_cache.clear()
+    yield
+    utils._executable_cache.clear()
 
 
 @pytest.fixture

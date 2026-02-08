@@ -70,7 +70,7 @@ def _apply_markdown_image_alt(
     if not match:
         return line, None
 
-    old_alt = match.group(1) if match.group(1) else None
+    old_alt = match.group(1) or None
     # Escape special characters in alt text
     escaped_alt = _escape_markdown_alt_text(new_alt)
     # Replace the alt text - use lambda to avoid backslash interpretation in replacement
@@ -125,7 +125,8 @@ def _apply_html_tag_attribute(
         if resolved_src != asset_path:
             continue
 
-        old_value = next((el.get(a) for a in read_old_from if el.get(a)), None)
+        old_value_raw = next((el.get(a) for a in read_old_from if el.get(a)), None)
+        old_value = str(old_value_raw) if old_value_raw is not None else None
         el[write_attr] = new_value
         return str(soup), old_value
 
@@ -183,7 +184,7 @@ def _apply_wikilink_image_alt(
     if not match:
         return line, None
 
-    old_alt = match.group(1) if match.group(1) else None
+    old_alt = match.group(1) or None
     # Escape special characters in alt text (wikilinks are still markdown)
     escaped_alt = _escape_markdown_alt_text(new_alt)
     # Replace with new alt text - use lambda to avoid backslash interpretation

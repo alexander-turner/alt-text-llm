@@ -7,6 +7,7 @@ This script produces a JSON work-queue.
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
+from urllib.parse import unquote
 
 from bs4 import BeautifulSoup
 from markdown_it import MarkdownIt
@@ -107,8 +108,17 @@ def _iter_media_tokens(tokens: Sequence[Token]) -> Iterable[Token]:
                 yield token
                 continue
 
-        if token.type == "inline" and "![[" in token.content:
-            yield token
+        if token.type == "inline":
+            content_lower = token.content.lower()
+            # Yield inline tokens for wikilink images
+            if "![[" in content_lower:
+                yield token
+            # Also yield inline tokens containing <video> so the full
+            # HTML (e.g. <video><source src="..."></video>) is available.
+            # markdown-it splits inline HTML into fragments, so child
+            # html_inline tokens may not have the complete tag.
+            if "<video" in content_lower:
+                yield token
 
         if token.children:
             stack.extend(token.children)
@@ -127,10 +137,11 @@ def _extract_html_img_info(token: Token) -> list[tuple[str, str | None]]:
     infos: list[tuple[str, str | None]] = []
 
     for img in soup.find_all("img"):
-        src = img.get("src")
-        alt = img.get("alt")
+        src = img.get("src") or None
+        alt_raw = img.get("alt")
+        alt = str(alt_raw) if alt_raw is not None else None
         if src:
-            infos.append((src, alt))
+            infos.append((str(src), alt))
 
     return infos
 
@@ -144,18 +155,18 @@ def _extract_html_video_info(token: Token) -> list[tuple[str, dict[str, str | No
     infos: list[tuple[str, dict[str, str | None]]] = []
 
     for video in soup.find_all("video"):
-        src = video.get("src")
-        if not src:
+        src_raw = video.get("src")
+        if not src_raw:
             source = video.find("source")
-            src = source.get("src") if source else None
+            src_raw = source.get("src") if source else None
 
-        if src:
-            accessibility_attrs = {
-                "aria_label": video.get("aria-label"),
-                "title": video.get("title"),
-                "aria_describedby": video.get("aria-describedby"),
+        if src_raw:
+            accessibility_attrs: dict[str, str | None] = {
+                "aria_label": video.get("aria-label") or None,
+                "title": video.get("title") or None,
+                "aria_describedby": video.get("aria-describedby") or None,
             }
-            infos.append((src, accessibility_attrs))
+            infos.append((str(src_raw), accessibility_attrs))
 
     return infos
 
@@ -164,17 +175,16 @@ def _get_line_number(token: Token, lines: Sequence[str], search_snippet: str) ->
     if token.map:
         return token.map[0] + 1
 
-    # Try exact match first
-    for idx, ln in enumerate(lines):
-        if search_snippet in ln:
-            return idx + 1
-
-    # If exact match fails, try with whitespace variations
-    # Remove parentheses and search for just the asset path with flexible whitespace
+    # Build candidate snippets: exact, URL-decoded, without parens, decoded without parens.
+    # markdown-it URL-encodes Unicode chars in src attrs, so we try decoded variants.
+    candidates = [search_snippet, unquote(search_snippet)]
     if search_snippet.startswith("(") and search_snippet.endswith(")"):
-        asset_path = search_snippet[1:-1]  # Remove parentheses
+        inner = search_snippet[1:-1]
+        candidates += [inner, unquote(inner)]
+
+    for candidate in dict.fromkeys(candidates):
         for idx, ln in enumerate(lines):
-            if asset_path in ln:
+            if candidate in ln:
                 return idx + 1
 
     raise ValueError(f"Could not find asset '{search_snippet}' in markdown file")
@@ -196,15 +206,15 @@ def _handle_md_asset(
         missing or placeholder alt text.
     """
 
-    src_raw = token.attrGet("src")
-    src_attr: str | None = str(src_raw) if src_raw is not None else None
-
-    alt_text: str | None = token.content  # alt stored here
+    src_attr = token.attrGet("src") or None
+    alt_text = token.content or None
     if not src_attr or _is_alt_meaningful(alt_text):
         return []
 
+    # markdown-it URL-encodes Unicode chars in src; decode for the queue item
+    decoded_src = unquote(src_attr)
     line_no = _get_line_number(token, lines, f"({src_attr})")
-    return [_create_queue_item(md_path, src_attr, line_no, lines)]
+    return [_create_queue_item(md_path, decoded_src, line_no, lines)]
 
 
 def _handle_html_asset(
@@ -295,7 +305,7 @@ def _iter_wikilink_images(content: str) -> Iterable[tuple[str, str | None]]:
             src, alt = inner, None
 
         src = src.strip()
-        alt = alt.strip() if alt is not None else None
+        alt = (alt.strip() or None) if alt else None
 
         if src:
             yield src, alt
@@ -331,7 +341,9 @@ def _process_file(md_path: Path) -> list[QueueItem]:
 
     items: list[QueueItem] = []
     tokens = md.parse(source_text)
-    processed_inline_videos = set()
+    # Track video asset paths already found via inline tokens to avoid
+    # double-counting when html_inline children are also yielded.
+    processed_video_assets: set[str] = set()
 
     for token in _iter_media_tokens(tokens):
         if token.type == "image":
@@ -343,15 +355,23 @@ def _process_file(md_path: Path) -> list[QueueItem]:
                 token_items = _handle_html_asset(token, md_path, lines)
             elif soup.find("video"):
                 token_items = _handle_html_video(token, md_path, lines)
+                # Filter out videos already found via parent inline token
+                token_items = [
+                    it for it in token_items
+                    if it.asset_path not in processed_video_assets
+                ]
             else:
                 token_items = []
         elif token.type == "inline":
+            token_items = []
             soup = BeautifulSoup(token.content, "html.parser")
-            if soup.find("video") and id(token) not in processed_inline_videos:
-                processed_inline_videos.add(id(token))
-                token_items = _handle_html_video(token, md_path, lines)
-            else:
-                token_items = _handle_wikilink_asset(token, md_path, lines)
+            if soup.find("video"):
+                video_items = _handle_html_video(token, md_path, lines)
+                for video_item in video_items:
+                    processed_video_assets.add(video_item.asset_path)
+                token_items.extend(video_items)
+            # Always check for wikilinks in inline tokens
+            token_items.extend(_handle_wikilink_asset(token, md_path, lines))
         else:
             token_items = _handle_wikilink_asset(token, md_path, lines)
         items.extend(token_items)

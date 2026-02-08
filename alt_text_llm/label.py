@@ -25,7 +25,7 @@ class LabelingSession:
     """Manages the labeling session state and navigation."""
 
     def __init__(self, suggestions: Sequence[utils.AltGenerationResult]) -> None:
-        self.suggestions = suggestions
+        self.suggestions: list[utils.AltGenerationResult] = list(suggestions)
         self.current_index = 0
         self.processed_results: list[utils.AltGenerationResult] = []
 
@@ -165,7 +165,7 @@ def _process_single_suggestion_for_labeling(
     queue_item = scan.QueueItem(
         markdown_file=suggestion_data.markdown_file,
         asset_path=suggestion_data.asset_path,
-        line_number=suggestion_data.line_number,
+        line_number=suggestion_data.line_number or 1,
         context_snippet=suggestion_data.context_snippet,
     )
 

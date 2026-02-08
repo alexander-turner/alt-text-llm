@@ -187,53 +187,47 @@ class TestDisplayManager:
                 display_manager.show_image(test_image)
 
 
-def test_label_suggestions_handles_file_errors(
+@pytest.mark.parametrize(
+    "error_type,error_on,expected_result_count,expected_saved,should_raise",
+    [
+        pytest.param(
+            FileNotFoundError, "image2.jpg", 1, 1, False,
+            id="file_error_graceful",
+        ),
+        pytest.param(
+            KeyboardInterrupt, "image2.jpg", None, 1, False,
+            id="keyboard_interrupt_saves",
+        ),
+        pytest.param(
+            RuntimeError, "image1.jpg", None, 0, True,
+            id="runtime_error_propagates",
+        ),
+    ],
+)
+def test_label_suggestions_error_handling(
     temp_dir: Path,
     test_suggestions: list[utils.AltGenerationResult],
+    error_type: type,
+    error_on: str,
+    expected_result_count: int | None,
+    expected_saved: int,
+    should_raise: bool,
 ) -> None:
-    """Test that individual file errors are handled gracefully and processing continues."""
+    """Test error handling during labeling: graceful recovery or propagation."""
     output_file = temp_dir / "test_output.json"
-
-    with _setup_error_mocks(FileNotFoundError, "image2.jpg"):
-        result_count = label.label_suggestions(
-            test_suggestions, Mock(), output_file, append_mode=False
-        )
-
-    assert result_count == 1  # Only first item processed successfully
-    _maybe_assert_saved_results(output_file, 1)
-
-
-def test_label_suggestions_saves_on_keyboard_interrupt(
-    temp_dir: Path,
-    test_suggestions: list[utils.AltGenerationResult],
-) -> None:
-    """Test that results are saved when KeyboardInterrupt occurs during processing."""
-    output_file = temp_dir / "test_output.json"
-
-    with _setup_error_mocks(KeyboardInterrupt, "image2.jpg"):
-        # KeyboardInterrupt is caught and handled gracefully, no exception raised
-        label.label_suggestions(
-            test_suggestions, Mock(), output_file, append_mode=False
-        )
-
-    _maybe_assert_saved_results(output_file, 1)
-
-
-def test_label_suggestions_saves_on_runtime_error(
-    temp_dir: Path,
-    test_suggestions: list[utils.AltGenerationResult],
-) -> None:
-    """Test that results are saved when RuntimeError occurs during processing."""
-    output_file = temp_dir / "test_output.json"
-
-    with _setup_error_mocks(RuntimeError, "image1.jpg"):
-        # RuntimeError is not caught, so it should still raise
-        with pytest.raises(RuntimeError):
-            label.label_suggestions(
+    with _setup_error_mocks(error_type, error_on):
+        if should_raise:
+            with pytest.raises(error_type):
+                label.label_suggestions(
+                    test_suggestions, Mock(), output_file, append_mode=False
+                )
+        else:
+            result_count = label.label_suggestions(
                 test_suggestions, Mock(), output_file, append_mode=False
             )
-
-    _maybe_assert_saved_results(output_file, 0)
+            if expected_result_count is not None:
+                assert result_count == expected_result_count
+    _maybe_assert_saved_results(output_file, expected_saved)
 
 
 def test_label_from_suggestions_file_loads_and_filters_data(
@@ -488,3 +482,53 @@ def test_prefill_after_undo(temp_dir: Path) -> None:
         None,
         "accepted first",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_labeling_session_empty_suggestions() -> None:
+    """LabelingSession with no suggestions should be immediately complete."""
+    session = label.LabelingSession([])
+    assert session.is_complete()
+    assert session.get_current_suggestion() is None
+    assert session.get_progress() == (1, 0)
+
+
+def test_labeling_session_multiple_undos() -> None:
+    """Multiple consecutive undos should work correctly."""
+    suggestions = [create_alt(i) for i in range(1, 4)]
+    session = label.LabelingSession(suggestions)
+
+    for s in suggestions:
+        session.add_result(create_alt(s.line_number, final_alt=f"final_{s.line_number}"))
+
+    assert session.is_complete()
+
+    undone3 = session.undo()
+    assert undone3 is not None
+    assert undone3.final_alt == "final_3"
+
+    undone2 = session.undo()
+    assert undone2 is not None
+    assert undone2.final_alt == "final_2"
+
+    undone1 = session.undo()
+    assert undone1 is not None
+    assert undone1.final_alt == "final_1"
+
+    assert session.undo() is None
+    assert session.current_index == 0
+
+
+def test_label_suggestions_empty_list(temp_dir: Path) -> None:
+    """Labeling with empty suggestions should return 0."""
+    from io import StringIO
+
+    output = temp_dir / "output.json"
+    result = label.label_suggestions(
+        [], Console(file=StringIO()), output, append_mode=False
+    )
+    assert result == 0

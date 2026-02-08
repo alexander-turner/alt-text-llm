@@ -104,57 +104,35 @@ def test_queue_expected_paths(
     assert sorted(item.asset_path for item in queue) == sorted(expected_paths)
 
 
-def test_html_img_line_number_fallback(tmp_path: Path) -> None:
-    """If markdown-it does not supply *token.map* for an HTML image, the
-    fallback logic should locate the correct source line instead of defaulting
-    to 1."""
-
-    md_content = textwrap.dedent(
-        """
-        Intro line.
-
-        <img src="assets/foo.jpg">
-
-        After image.
-        """
-    )
-    _write_md(tmp_path, md_content, "fallback.md")
-
+@pytest.mark.parametrize(
+    "md_content,expected_line",
+    [
+        pytest.param(
+            "\nIntro line.\n\n<img src=\"assets/foo.jpg\">\n\nAfter image.\n",
+            4,
+            id="fallback_no_frontmatter",
+        ),
+        pytest.param(
+            "\n---\ntitle: Sample\n---\n\nPreamble text.\n\n<img src=\"assets/bar.jpg\">\n",
+            None,  # computed dynamically
+            id="with_frontmatter",
+        ),
+    ],
+)
+def test_html_img_line_number(
+    tmp_path: Path, md_content: str, expected_line: int | None
+) -> None:
+    """Line numbers for HTML images should be correct, even after front-matter."""
+    file_path = _write_md(tmp_path, md_content, "test.md")
+    if expected_line is None:
+        expected_line = next(
+            idx + 1
+            for idx, ln in enumerate(file_path.read_text().splitlines())
+            if "<img" in ln
+        )
     queue = scan.build_queue(tmp_path)
     assert len(queue) == 1
-
-    item = queue[0]
-    # The <img> tag is on the 4th line of the file (1-based)
-    assert item.line_number == 4, f"Expected line 4, got {item.line_number}"
-
-
-def test_html_img_line_number_with_frontmatter(tmp_path: Path) -> None:
-    """Ensure line numbers for HTML images located *after* YAML front-matter
-    are computed relative to the full file."""
-
-    md_content = textwrap.dedent(
-        """
-        ---
-        title: Sample
-        ---
-
-        Preamble text.
-
-        <img src="assets/bar.jpg">
-        """
-    )
-    file_path = _write_md(tmp_path, md_content, "frontmatter.md")
-
-    # Sanity-check the actual line number of the <img> element
-    img_line_no = next(
-        idx + 1
-        for idx, ln in enumerate(file_path.read_text().splitlines())
-        if "<img" in ln
-    )
-
-    queue = scan.build_queue(tmp_path)
-    assert len(queue) == 1
-    assert queue[0].line_number == img_line_no
+    assert queue[0].line_number == expected_line
 
 
 def test_get_line_number_raises_error_when_asset_not_found(
@@ -224,6 +202,16 @@ def test_html_img_error_when_src_not_in_content(tmp_path: Path) -> None:
             "![[img1.png|image]]\n![[img2.png|Good alt]]\n![[img3.png]]",
             ["img1.png", "img3.png"],
         ),
+        # Multiple placeholders plus good alt
+        (
+            "![[assets/image.png|image]]\n![[assets/photo.jpg|photo]]\n![[assets/pic.png|Good description]]",
+            ["assets/image.png", "assets/photo.jpg"],
+        ),
+        # URL wikilink with good alt
+        (
+            "![[https://example.com/image.png]]\n![[https://example.com/photo.jpg|Good alt text]]",
+            ["https://example.com/image.png"],
+        ),
     ],
 )
 def test_wikilink_formats(
@@ -273,93 +261,6 @@ def test_build_queue_wikilink_without_alt(tmp_path: Path) -> None:
     assert "Here is a wikilink image" in queue[0].context_snippet
 
 
-def test_build_queue_wikilink_with_alt(tmp_path: Path) -> None:
-    """Test that wikilink images with meaningful alt text are not queued."""
-    md_content = textwrap.dedent(
-        """
-        # Test Document
-        
-        ![[assets/image.png|A meaningful description of the image]]
-        """
-    )
-    _write_md(tmp_path, md_content, "wikilink_with_alt.md")
-
-    queue = scan.build_queue(tmp_path)
-    assert len(queue) == 0
-
-
-def test_build_queue_wikilink_with_placeholder_alt(tmp_path: Path) -> None:
-    """Test that wikilink images with placeholder alt text are queued."""
-    md_content = textwrap.dedent(
-        """
-        # Test Document
-        
-        ![[assets/image.png|image]]
-        ![[assets/photo.jpg|photo]]
-        ![[assets/pic.png|Good description]]
-        """
-    )
-    _write_md(tmp_path, md_content, "wikilink_placeholder.md")
-
-    queue = scan.build_queue(tmp_path)
-    # First two should be queued (placeholder alts), third should not
-    assert len(queue) == 2
-    paths = {item.asset_path for item in queue}
-    assert "assets/image.png" in paths
-    assert "assets/photo.jpg" in paths
-    assert "assets/pic.png" not in paths
-
-
-def test_build_queue_wikilink_with_url(tmp_path: Path) -> None:
-    """Test that wikilink images with full URLs are detected."""
-    md_content = textwrap.dedent(
-        """
-        # Test Document
-        
-        ![[https://example.com/image.png]]
-        ![[https://example.com/photo.jpg|Good alt text]]
-        """
-    )
-    _write_md(tmp_path, md_content, "wikilink_url.md")
-
-    queue = scan.build_queue(tmp_path)
-    # Only the first one (without alt) should be queued
-    assert len(queue) == 1
-    assert queue[0].asset_path == "https://example.com/image.png"
-
-
-def test_build_queue_mixed_formats(tmp_path: Path) -> None:
-    """Test that all image formats (markdown, HTML, wikilink) are detected together."""
-    md_content = textwrap.dedent(
-        """
-        # Mixed Formats
-        
-        Markdown without alt: ![](markdown.png)
-        
-        HTML without alt: <img src="html.jpg">
-        
-        Wikilink without alt: ![[wikilink.gif]]
-        
-        Markdown with alt: ![Good description](good-markdown.png)
-        
-        HTML with alt: <img src="good-html.jpg" alt="Good description">
-        
-        Wikilink with alt: ![[good-wikilink.png|Good description]]
-        """
-    )
-    _write_md(tmp_path, md_content, "mixed.md")
-
-    queue = scan.build_queue(tmp_path)
-    # Should find 3 images without meaningful alt text
-    assert len(queue) == 3
-    paths = {item.asset_path for item in queue}
-    assert "markdown.png" in paths
-    assert "html.jpg" in paths
-    assert "wikilink.gif" in paths
-    # Should not include images with good alt text
-    assert "good-markdown.png" not in paths
-    assert "good-html.jpg" not in paths
-    assert "good-wikilink.png" not in paths
 
 
 def test_wikilink_line_numbers(tmp_path: Path) -> None:
@@ -397,63 +298,29 @@ def test_wikilink_line_numbers(tmp_path: Path) -> None:
     assert image2_line in line_numbers
 
 
-def test_wikilink_document_embeds_not_treated_as_images(tmp_path: Path) -> None:
-    """Test that wikilink document embeds (with # but no image extension) are not treated as images."""
-    md_content = textwrap.dedent(
-        """
-        # Test Document
-        
-        This is a document embed (not an image):
-        ![[output-feedback-can-obfuscate-chain-of-thought#]]
-        
-        This is also a document embed with a heading:
-        ![[another-document#specific-heading]]
-        
-        This is also NOT an image (has # fragment):
-        ![[diagram.png#light-mode]]
-        
-        But this IS a regular image:
-        ![[photo.jpg]]
-        """
-    )
-    _write_md(tmp_path, md_content, "doc_embeds.md")
-
+@pytest.mark.parametrize(
+    "content,expected_asset",
+    [
+        pytest.param(
+            "![[output-feedback#]]\n![[another#heading]]\n![[diagram.png#light-mode]]\n![[photo.jpg]]",
+            "photo.jpg",
+            id="document_embeds_with_hash_ignored",
+        ),
+        pytest.param(
+            "![[document.pdf]]\n![[notes.md]]\n![[readme.txt]]\n![[photo.png]]",
+            "photo.png",
+            id="non_image_files_ignored",
+        ),
+    ],
+)
+def test_wikilink_non_image_wikilinks_ignored(
+    tmp_path: Path, content: str, expected_asset: str
+) -> None:
+    """Non-image wikilinks (document embeds, non-media files) should be ignored."""
+    _write_md(tmp_path, content, "test.md")
     queue = scan.build_queue(tmp_path)
-
-    # Should only find the one actual image (photo.jpg)
-    # All wikilinks with # are document/section embeds, not images
     assert len(queue) == 1
-    assert queue[0].asset_path == "photo.jpg"
-
-    # Should NOT include any embeds with #
-    paths = {item.asset_path for item in queue}
-    assert "output-feedback-can-obfuscate-chain-of-thought#" not in paths
-    assert "another-document#specific-heading" not in paths
-    assert "diagram.png#light-mode" not in paths
-
-
-def test_wikilink_non_image_files_ignored(tmp_path: Path) -> None:
-    """Test that wikilinks to non-image files are ignored."""
-    md_content = textwrap.dedent(
-        """
-        # Test Document
-        
-        Link to a PDF: ![[document.pdf]]
-        
-        Link to a markdown file: ![[notes.md]]
-        
-        Link to a text file: ![[readme.txt]]
-        
-        But this is an image: ![[photo.png]]
-        """
-    )
-    _write_md(tmp_path, md_content, "non_images.md")
-
-    queue = scan.build_queue(tmp_path)
-
-    # Should only find the actual image
-    assert len(queue) == 1
-    assert queue[0].asset_path == "photo.png"
+    assert queue[0].asset_path == expected_asset
 
 
 @pytest.mark.parametrize(
@@ -523,7 +390,7 @@ def test_video_detection(tmp_path: Path, video_html: str, should_detect: bool):
     queue = scan.build_queue(tmp_path)
     if should_detect:
         assert len(queue) == 1
-        assert "demo.mp4" in queue[0].asset_path
+        assert queue[0].asset_path == "demo.mp4"
     else:
         assert len(queue) == 0
 
@@ -538,3 +405,146 @@ def test_mixed_images_and_videos(tmp_path: Path):
     assert len(queue) == 3
     paths = {item.asset_path for item in queue}
     assert paths == {"image.png", "demo.mp4", "photo.jpg"}
+
+
+# ---------------------------------------------------------------------------
+# Edge cases and boundary conditions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param("", id="empty_file"),
+        pytest.param("---\ntitle: hello\n---\n", id="only_frontmatter"),
+    ],
+)
+def test_no_images_produces_empty_queue(tmp_path: Path, content: str) -> None:
+    """Files without images should produce no queue items."""
+    (tmp_path / "test.md").write_text(content, encoding="utf-8")
+    assert scan.build_queue(tmp_path) == []
+
+
+def test_hundreds_of_images(tmp_path: Path) -> None:
+    """File with 500 images should all be detected."""
+    lines = [f"![](image_{i}.png)" for i in range(500)]
+    (tmp_path / "big.md").write_text("\n\n".join(lines), encoding="utf-8")
+    assert len(scan.build_queue(tmp_path)) == 500
+
+
+@pytest.mark.parametrize(
+    "content,expected,excluded",
+    [
+        pytest.param(
+            "# Docs\n\n```markdown\n![](code.png)\n```\n\n![](real.png)\n",
+            {"real.png"},
+            {"code.png"},
+            id="fenced_code_block",
+        ),
+        pytest.param(
+            "Use `![](fake.png)` syntax.\n\n![](real.png)\n",
+            {"real.png"},
+            {"fake.png"},
+            id="inline_code",
+        ),
+    ],
+)
+def test_images_in_code_ignored(
+    tmp_path: Path, content: str, expected: set[str], excluded: set[str]
+) -> None:
+    """Images inside code contexts should NOT be detected."""
+    (tmp_path / "test.md").write_text(content, encoding="utf-8")
+    paths = {item.asset_path for item in scan.build_queue(tmp_path)}
+    assert expected <= paths
+    assert paths.isdisjoint(excluded)
+
+
+@pytest.mark.parametrize(
+    "content,expected_path,expected_count",
+    [
+        pytest.param("![](画像.png)\n", "画像.png", 1, id="unicode_md_path"),
+        pytest.param('<img src="фото.jpg">\n', "фото.jpg", 1, id="unicode_html_path"),
+        pytest.param("![日本語の説明](image.png)\n", None, 0, id="unicode_alt_meaningful"),
+    ],
+)
+def test_unicode_handling(
+    tmp_path: Path, content: str, expected_path: str | None, expected_count: int
+) -> None:
+    """Unicode in asset paths should be detected; unicode alt text is meaningful."""
+    (tmp_path / "test.md").write_text(content, encoding="utf-8")
+    queue = scan.build_queue(tmp_path)
+    assert len(queue) == expected_count
+    if expected_path is not None:
+        assert queue[0].asset_path == expected_path
+
+
+@pytest.mark.parametrize(
+    "content,expected_asset",
+    [
+        pytest.param(
+            '<div><div><div><p><img src="nested.jpg"></p></div></div></div>\n',
+            "nested.jpg",
+            id="deeply_nested",
+        ),
+        pytest.param(
+            '<img src="ok.png">\n<img src="broken.jpg\n<img src=unclosed>\n',
+            "ok.png",
+            id="malformed_html",
+        ),
+        pytest.param(
+            '<img src="image (1).png">\n',
+            "image (1).png",
+            id="special_regex_chars",
+        ),
+    ],
+)
+def test_html_edge_cases(tmp_path: Path, content: str, expected_asset: str) -> None:
+    """Various HTML edge cases should detect the expected asset."""
+    (tmp_path / "test.md").write_text(content, encoding="utf-8")
+    paths = {item.asset_path for item in scan.build_queue(tmp_path)}
+    assert expected_asset in paths
+
+
+def test_video_with_source_child(tmp_path: Path) -> None:
+    """Video tag using <source> child instead of src attribute."""
+    content = textwrap.dedent("""\
+        # Video Demo
+
+        Some intro text.
+
+        <video controls><source src="clip.mp4" type="video/mp4"></video>
+
+        After video text.
+    """)
+    (tmp_path / "source_video.md").write_text(content, encoding="utf-8")
+    queue = scan.build_queue(tmp_path)
+    assert any(item.asset_path == "clip.mp4" for item in queue)
+
+
+def test_multiple_files_in_directory(tmp_path: Path) -> None:
+    """Scanning a directory with multiple markdown files."""
+    for i in range(10):
+        (tmp_path / f"file_{i}.md").write_text(
+            f"![](image_{i}.png)\n", encoding="utf-8"
+        )
+    assert len(scan.build_queue(tmp_path)) == 10
+
+
+def test_non_md_files_ignored(tmp_path: Path) -> None:
+    """Non-markdown files should be ignored."""
+    (tmp_path / "image.png").write_bytes(b"\x89PNG")
+    (tmp_path / "readme.txt").write_text("![](img.png)")
+    (tmp_path / "actual.md").write_text("![](real.png)\n")
+    queue = scan.build_queue(tmp_path)
+    assert len(queue) == 1
+    assert queue[0].asset_path == "real.png"
+
+
+def test_url_assets_detected(tmp_path: Path) -> None:
+    """Remote URL assets should be detected."""
+    (tmp_path / "url.md").write_text(
+        "![](https://example.com/img.jpg)\n", encoding="utf-8"
+    )
+    queue = scan.build_queue(tmp_path)
+    assert len(queue) == 1
+    assert queue[0].asset_path == "https://example.com/img.jpg"

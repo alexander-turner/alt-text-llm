@@ -1,12 +1,9 @@
 """Helper functions for test setup."""
 
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from ruamel.yaml import YAML
-
-from alt_text_llm import utils
 
 
 def create_test_image(
@@ -18,43 +15,23 @@ def create_test_image(
     draw: str | None = None,
     metadata: str | None = None,
 ) -> None:
-    """
-    Creates a test image using ImageMagick.
+    """Write a minimal dummy file for tests that need an image on disk.
+
+    No external executables are required.  The content is not a valid image,
+    but every test that calls this helper mocks ``subprocess.run`` (or
+    similar) before actually processing the file.
 
     Args:
-        path (Path): The file path where the image will be saved.
-        size (str): The size of the image in ImageMagick format (e.g., "100x100").
-        colorspace (str, optional): The colorspace to use (e.g., "sRGB").
-        background (str, optional): The background color/type (e.g., "none" for transparency).
-        draw (str, optional): ImageMagick draw commands to execute.
-        metadata (str, optional): Metadata to add to the image (e.g., "Artist=Test Artist").
-
-    Returns:
-        None
-
-    Raises:
-        subprocess.CalledProcessError: If the ImageMagick command fails.
+        path: The file path where the image will be saved.
+        size: The size of the image in ImageMagick format (e.g., "100x100").
+            Accepted for API compatibility but not used.
+        colorspace: The colorspace to use (e.g., "sRGB"). Not used.
+        background: The background color/type (e.g., "none" for transparency). Not used.
+        draw: ImageMagick draw commands to execute. Not used.
+        metadata: Metadata to add to the image (e.g., "Artist=Test Artist"). Not used.
     """
-    magick_executable = utils.find_executable("magick")
-    command = [magick_executable, "-size", size]
-
-    if background:
-        command.extend(["xc:" + background])
-    else:
-        command.extend(["xc:red"])
-
-    if colorspace:
-        command.extend(["-colorspace", colorspace])
-
-    if draw:
-        command.extend(["-draw", draw])
-
-    if metadata:
-        command.extend(["-set", metadata])
-
-    command.append(str(path))
-
-    subprocess.run(command, check=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
 
 
 def create_markdown_file(

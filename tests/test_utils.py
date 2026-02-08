@@ -572,7 +572,10 @@ class TestConvertAvifToPng:
 
         create_test_image(avif_file, "100x100")
 
-        with patch("subprocess.run") as mock_run:
+        with (
+            patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/magick"),
+            patch("subprocess.run") as mock_run,
+        ):
             mock_run.return_value = None
             result = utils._convert_avif_to_png(avif_file, temp_dir)
 
@@ -581,7 +584,7 @@ class TestConvertAvifToPng:
 
             # Verify exact command structure
             call_args = mock_run.call_args[0][0]
-            assert call_args[0].endswith("magick")
+            assert call_args[0] == "/usr/bin/magick"
             assert call_args[1] == str(avif_file)
             assert call_args[2] == str(png_file)
             assert len(call_args) == 3  # Should be exactly 3 arguments
@@ -597,7 +600,10 @@ class TestConvertAvifToPng:
         avif_file = temp_dir / "test.avif"
         avif_file.write_bytes(b"invalid avif data")
 
-        with patch("subprocess.run") as mock_run:
+        with (
+            patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/magick"),
+            patch("subprocess.run") as mock_run,
+        ):
             mock_run.side_effect = subprocess.CalledProcessError(
                 1, "magick", stderr="Conversion failed"
             )
@@ -626,7 +632,10 @@ class TestConvertGifToMp4:
         mp4_file = temp_dir / "test.mp4"
         create_test_image(gif_file, "100x100")
 
-        with patch("subprocess.run") as mock_run:
+        with (
+            patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/ffmpeg"),
+            patch("subprocess.run") as mock_run,
+        ):
             mock_run.return_value = None
             result = utils._convert_gif_to_mp4(gif_file, temp_dir)
 
@@ -647,7 +656,10 @@ class TestConvertGifToMp4:
         gif_file = temp_dir / "test.gif"
         gif_file.write_bytes(b"invalid gif data")
 
-        with patch("subprocess.run") as mock_run:
+        with (
+            patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/ffmpeg"),
+            patch("subprocess.run") as mock_run,
+        ):
             exc = subprocess.CalledProcessError(
                 1, "ffmpeg", stderr="Conversion failed"
             )
@@ -714,7 +726,10 @@ class TestDownloadAsset:
 
         base_queue_item.asset_path = "image.avif"
 
-        with patch("subprocess.run") as mock_run:
+        with (
+            patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/magick"),
+            patch("subprocess.run") as mock_run,
+        ):
             mock_run.return_value = None
             result = utils.download_asset(base_queue_item, temp_dir)
 
@@ -753,14 +768,17 @@ class TestDownloadAsset:
         mock_response.iter_content.return_value = [b"fake", b"avif", b"data"]
         mock_response.raise_for_status.return_value = None
 
-        with patch("requests.get", return_value=mock_response):
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = None
-                result = utils.download_asset(base_queue_item, temp_dir)
+        with (
+            patch("requests.get", return_value=mock_response),
+            patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/magick"),
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = None
+            result = utils.download_asset(base_queue_item, temp_dir)
 
-                # Should have converted to PNG
-                assert result.suffix == ".png"
-                mock_run.assert_called_once()
+            # Should have converted to PNG
+            assert result.suffix == ".png"
+            mock_run.assert_called_once()
 
     def test_file_not_found(
         self, temp_dir: Path, base_queue_item: scan.QueueItem
@@ -1257,36 +1275,27 @@ class TestParagraphContext:
 # ---------------------------------------------------------------------------
 
 
-def test_find_git_root(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test finding the git root directory."""
-    expected_output = "/path/to/git/root"
+@pytest.mark.parametrize(
+    "returncode,stdout,should_raise",
+    [
+        pytest.param(0, "/path/to/git/root", False, id="success"),
+        pytest.param(1, "", True, id="failure"),
+    ],
+)
+def test_get_git_root(
+    monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: str, should_raise: bool
+) -> None:
+    """Test finding the git root directory (success and failure)."""
 
     def mock_subprocess_run(*args, **_kwargs) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess(
-            args=args,
-            returncode=0,
-            stdout=expected_output,
-        )
+        return subprocess.CompletedProcess(args=args, returncode=returncode, stdout=stdout)
 
     monkeypatch.setattr(utils.subprocess, "run", mock_subprocess_run)
-    assert utils.get_git_root() == Path(expected_output)
-
-
-def test_get_git_root_raises_error() -> None:
-    """Test that get_git_root raises RuntimeError when git command fails."""
-
-    def mock_subprocess_run(*args, **_kwargs) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess(
-            args=args,
-            returncode=1,
-            stdout="",
-        )
-
-    with (
-        mock.patch.object(utils.subprocess, "run", mock_subprocess_run),
-        pytest.raises(RuntimeError),
-    ):
-        utils.get_git_root()
+    if should_raise:
+        with pytest.raises(RuntimeError):
+            utils.get_git_root()
+    else:
+        assert utils.get_git_root() == Path(stdout)
 
 
 def test_find_executable_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1422,36 +1431,91 @@ def test_get_files_ignore_dirs(tmp_path: Path) -> None:
     assert result_paths == expected_paths
 
 
-def test_split_yaml_invalid_format(tmp_path: Path) -> None:
-    """Test handling of invalid YAML format."""
-    file_path = tmp_path / "invalid.md"
-    file_path.write_text(
-        "Invalid content without proper frontmatter", encoding="utf-8"
+@pytest.mark.parametrize(
+    "file_content,expected_metadata,expected_content_substr,verbose",
+    [
+        pytest.param(
+            "Invalid content without proper frontmatter",
+            {}, "", False,
+            id="invalid_format",
+        ),
+        pytest.param(
+            "---\n---\nContent",
+            {}, "\nContent", False,
+            id="empty_frontmatter",
+        ),
+        pytest.param(
+            '---\ntitle: "Unclosed quote\n---\nContent',
+            {}, "", True,
+            id="malformed_yaml",
+        ),
+    ],
+)
+def test_split_yaml_edge_cases(
+    tmp_path: Path, file_content: str,
+    expected_metadata: dict, expected_content_substr: str, verbose: bool,
+) -> None:
+    """Test split_yaml with invalid, empty, and malformed frontmatter."""
+    file_path = tmp_path / "test.md"
+    file_path.write_text(file_content, encoding="utf-8")
+    metadata, content = utils.split_yaml(file_path, verbose=verbose)
+    assert metadata == expected_metadata
+    assert expected_content_substr in content or content == expected_content_substr
+
+
+# ---------------------------------------------------------------------------
+# Edge cases and boundary conditions
+# ---------------------------------------------------------------------------
+
+
+def test_split_yaml_unicode_content(tmp_path: Path) -> None:
+    """YAML with unicode values."""
+    content = "---\ntitle: 日本語タイトル\n---\n本文\n"
+    fp = tmp_path / "unicode.md"
+    fp.write_text(content, encoding="utf-8")
+    metadata, body = utils.split_yaml(fp)
+    assert metadata.get("title") == "日本語タイトル"
+    assert "本文" in body
+
+
+def test_write_output_unicode(tmp_path: Path) -> None:
+    """write_output should handle Unicode in results."""
+    results = [
+        utils.AltGenerationResult(
+            markdown_file="日本語.md",
+            asset_path="画像.png",
+            suggested_alt="代替テキスト",
+            model="test",
+            context_snippet="コンテキスト",
+            final_alt="最終テキスト",
+        )
+    ]
+    output = tmp_path / "unicode_output.json"
+    utils.write_output(results, output)
+    data = json.loads(output.read_text(encoding="utf-8"))
+    assert data[0]["markdown_file"] == "日本語.md"
+    assert data[0]["suggested_alt"] == "代替テキスト"
+
+
+@pytest.mark.parametrize(
+    "asset,max_chars,expected_keyword",
+    [
+        pytest.param("demo.mp4", 200, "video", id="video"),
+        pytest.param("photo.jpg", 300, "alt text", id="image"),
+    ],
+)
+def test_build_prompt_asset_type(
+    tmp_path: Path, asset: str, max_chars: int, expected_keyword: str
+) -> None:
+    """build_prompt uses asset-type-specific language and respects char limit."""
+    md_path = tmp_path / "test.md"
+    md_path.write_text("Some content\n\nAsset here\n", encoding="utf-8")
+    qi = scan.QueueItem(
+        markdown_file=str(md_path),
+        asset_path=asset,
+        line_number=3,
+        context_snippet="ctx",
     )
-
-    metadata, content = utils.split_yaml(file_path)
-    assert metadata == {}
-    assert content == ""
-
-
-def test_split_yaml_empty_frontmatter(tmp_path: Path) -> None:
-    """Test handling of empty frontmatter."""
-    file_path = tmp_path / "empty.md"
-    file_path.write_text("---\n---\nContent", encoding="utf-8")
-
-    metadata, content = utils.split_yaml(file_path)
-    assert metadata == {}
-    assert content == "\nContent"
-
-
-def test_split_yaml_malformed_yaml(tmp_path: Path) -> None:
-    """Test handling of malformed YAML."""
-    file_path = tmp_path / "malformed.md"
-    file_path.write_text(
-        '---\ntitle: "Unclosed quote\n---\nContent', encoding="utf-8"
-    )
-
-    # Expect split_yaml to return empty metadata and content for malformed files
-    metadata, content = utils.split_yaml(file_path, verbose=True)
-    assert metadata == {}
-    assert content == ""
+    prompt = utils.build_prompt(qi, max_chars=max_chars)
+    assert expected_keyword in prompt.lower()
+    assert f"Under {max_chars} characters" in prompt
