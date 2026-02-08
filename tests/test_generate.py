@@ -145,52 +145,30 @@ def test_filter_existing_captions_filters_items(
     console_mock.print.assert_called_once()
 
 
-def test_run_llm_failure(temp_dir: Path) -> None:
-    """Test LLM execution failure."""
+@pytest.mark.parametrize(
+    "returncode,stdout,stderr,expected_match",
+    [
+        pytest.param(1, "", "LLM error", "Caption generation failed", id="failure"),
+        pytest.param(0, "   ", "", "LLM returned empty caption", id="empty_output"),
+    ],
+)
+def test_run_llm_error_cases(
+    temp_dir: Path, returncode: int, stdout: str, stderr: str, expected_match: str,
+) -> None:
+    """Test LLM execution failure and empty output."""
     attachment = temp_dir / "test.jpg"
     attachment.write_bytes(b"fake image")
-    prompt = "Generate alt text for this image"
-    model = "gemini-2.5-flash"
-    timeout = 60
-
     mock_result = Mock()
-    mock_result.returncode = 1
-    mock_result.stdout = ""
-    mock_result.stderr = "LLM error"
+    mock_result.returncode = returncode
+    mock_result.stdout = stdout
+    mock_result.stderr = stderr
 
     with (
         patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/llm"),
         patch("subprocess.run", return_value=mock_result),
+        pytest.raises(utils.AltGenerationError, match=expected_match),
     ):
-        with pytest.raises(
-            utils.AltGenerationError,
-            match="Caption generation failed",
-        ):
-            generate._run_llm(attachment, prompt, model, timeout)
-
-
-def test_run_llm_empty_output(temp_dir: Path) -> None:
-    """Test LLM returning empty output."""
-    attachment = temp_dir / "test.jpg"
-    attachment.write_bytes(b"fake image")
-    prompt = "Generate alt text for this image"
-    model = "gemini-2.5-flash"
-    timeout = 60
-
-    mock_result = Mock()
-    mock_result.returncode = 0
-    mock_result.stdout = "   "  # Only whitespace
-    mock_result.stderr = ""
-
-    with (
-        patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/llm"),
-        patch("subprocess.run", return_value=mock_result),
-    ):
-        with pytest.raises(
-            utils.AltGenerationError,
-            match="LLM returned empty caption",
-        ):
-            generate._run_llm(attachment, prompt, model, timeout)
+        generate._run_llm(attachment, "Generate alt text", "gemini-2.5-flash", 60)
 
 
 @pytest.mark.asyncio

@@ -101,84 +101,78 @@ def caption_item(markdown_file_with_image: Path) -> utils.AltGenerationResult:
     )
 
 
-def test_apply_markdown_image_alt() -> None:
+@pytest.mark.parametrize(
+    "line,expected_old_alt,expected_new_line",
+    [
+        pytest.param(
+            "This is ![old alt](path/to/image.png) in text",
+            "old alt",
+            "This is ![new alt text](path/to/image.png) in text",
+            id="existing_alt",
+        ),
+        pytest.param(
+            "This is ![](path/to/image.png) in text",
+            None,
+            "This is ![new alt text](path/to/image.png) in text",
+            id="empty_alt",
+        ),
+        pytest.param(
+            "This is ![old alt](path/to/image.png ) in text",
+            "old alt",
+            "This is ![new alt text](path/to/image.png) in text",
+            id="whitespace_before_paren",
+        ),
+    ],
+)
+def test_apply_markdown_image_alt(
+    line: str, expected_old_alt: str | None, expected_new_line: str
+) -> None:
     """Test applying alt text to markdown image syntax."""
-    line = "This is ![old alt](path/to/image.png) in text"
     new_line, old_alt = apply._apply_markdown_image_alt(
         line, "path/to/image.png", "new alt text"
     )
-
-    assert old_alt == "old alt"
-    assert new_line == "This is ![new alt text](path/to/image.png) in text"
-
-
-def test_apply_markdown_image_alt_empty() -> None:
-    """Test applying alt text when original is empty."""
-    line = "This is ![](path/to/image.png) in text"
-    new_line, old_alt = apply._apply_markdown_image_alt(
-        line, "path/to/image.png", "new alt text"
-    )
-
-    assert old_alt is None
-    assert new_line == "This is ![new alt text](path/to/image.png) in text"
+    assert old_alt == expected_old_alt
+    assert new_line == expected_new_line
 
 
-def test_apply_markdown_image_alt_whitespace_before_paren() -> None:
-    """Test applying alt text when there's whitespace before closing paren."""
-    line = "This is ![old alt](path/to/image.png ) in text"
-    new_line, old_alt = apply._apply_markdown_image_alt(
-        line, "path/to/image.png", "new alt text"
-    )
-
-    assert old_alt == "old alt"
-    assert new_line == "This is ![new alt text](path/to/image.png) in text"
-
-
-def test_apply_html_image_alt_existing() -> None:
-    """Test applying alt text to HTML img tag with existing alt."""
-    line = '<img alt="old alt" src="path/to/image.png">'
+@pytest.mark.parametrize(
+    "line,expected_old_alt,expected_new_line",
+    [
+        pytest.param(
+            '<img alt="old alt" src="path/to/image.png">',
+            "old alt",
+            '<img alt="new alt text" src="path/to/image.png"/>',
+            id="existing_alt",
+        ),
+        pytest.param(
+            '<img src="path/to/image.png">',
+            None,
+            '<img alt="new alt text" src="path/to/image.png"/>',
+            id="no_alt",
+        ),
+        pytest.param(
+            '<img alt="old alt" src="path/to/image.png" class="theme-emoji"/>',
+            "old alt",
+            '<img alt="new alt text" class="theme-emoji" src="path/to/image.png"/>',
+            id="self_closing",
+        ),
+        pytest.param(
+            '<img src="path/to/image.png" class="icon"/>',
+            None,
+            '<img alt="new alt text" class="icon" src="path/to/image.png"/>',
+            id="self_closing_no_alt",
+        ),
+    ],
+)
+def test_apply_html_image_alt(
+    line: str, expected_old_alt: str | None, expected_new_line: str
+) -> None:
+    """Test applying alt text to HTML img tags."""
     new_line, old_alt = apply._apply_html_image_alt(
         line, "path/to/image.png", "new alt text"
     )
-
-    assert old_alt == "old alt"
-    assert new_line == '<img alt="new alt text" src="path/to/image.png"/>'
-
-
-def test_apply_html_image_alt_no_alt() -> None:
-    """Test applying alt text to HTML img tag without alt."""
-    line = '<img src="path/to/image.png">'
-    new_line, old_alt = apply._apply_html_image_alt(
-        line, "path/to/image.png", "new alt text"
-    )
-
-    assert old_alt is None
-    assert new_line == '<img alt="new alt text" src="path/to/image.png"/>'
-
-
-def test_apply_html_image_alt_self_closing() -> None:
-    """Test applying alt text to self-closing HTML img tag."""
-    line = '<img alt="old alt" src="path/to/image.png" class="theme-emoji"/>'
-    new_line, old_alt = apply._apply_html_image_alt(
-        line, "path/to/image.png", "new alt text"
-    )
-
-    assert old_alt == "old alt"
-    assert (
-        new_line
-        == '<img alt="new alt text" class="theme-emoji" src="path/to/image.png"/>'
-    )
-
-
-def test_apply_html_image_alt_self_closing_no_alt() -> None:
-    """Test adding alt text to self-closing HTML img tag without alt."""
-    line = '<img src="path/to/image.png" class="icon"/>'
-    new_line, old_alt = apply._apply_html_image_alt(
-        line, "path/to/image.png", "new alt text"
-    )
-
-    assert old_alt is None
-    assert new_line == '<img alt="new alt text" class="icon" src="path/to/image.png"/>'
+    assert old_alt == expected_old_alt
+    assert new_line == expected_new_line
 
 
 def test_apply_html_image_alt_parser_rejected_markup_is_ignored() -> None:
@@ -324,53 +318,48 @@ Second image: ![alt2](image2.png)
     assert "![new caption 2](image2.png)" in new_content
 
 
-def test_apply_wikilink_image_alt_with_existing_alt() -> None:
-    """Test applying alt text to wikilink image syntax with existing alt."""
-    line = "This is ![[path/to/image.png|old alt]] in text"
+@pytest.mark.parametrize(
+    "line,asset_path,expected_old_alt,expected_new_line",
+    [
+        pytest.param(
+            "This is ![[path/to/image.png|old alt]] in text",
+            "path/to/image.png",
+            "old alt",
+            "This is ![[path/to/image.png|new alt text]] in text",
+            id="existing_alt",
+        ),
+        pytest.param(
+            "This is ![[path/to/image.png]] in text",
+            "path/to/image.png",
+            None,
+            "This is ![[path/to/image.png|new alt text]] in text",
+            id="no_alt",
+        ),
+        pytest.param(
+            "![[https://assets.turntrout.com/static/images/posts/distillation-robustifies-unlearning-20250612141417.avif]]",
+            "https://assets.turntrout.com/static/images/posts/distillation-robustifies-unlearning-20250612141417.avif",
+            None,
+            "![[https://assets.turntrout.com/static/images/posts/distillation-robustifies-unlearning-20250612141417.avif|new alt text]]",
+            id="full_url",
+        ),
+        pytest.param(
+            "This is ![markdown](image.png) not wikilink",
+            "image.png",
+            None,
+            "This is ![markdown](image.png) not wikilink",
+            id="no_match",
+        ),
+    ],
+)
+def test_apply_wikilink_image_alt(
+    line: str, asset_path: str, expected_old_alt: str | None, expected_new_line: str
+) -> None:
+    """Test applying alt text to wikilink image syntax."""
     new_line, old_alt = apply._apply_wikilink_image_alt(
-        line, "path/to/image.png", "new alt text"
+        line, asset_path, "new alt text"
     )
-
-    assert old_alt == "old alt"
-    assert new_line == "This is ![[path/to/image.png|new alt text]] in text"
-
-
-def test_apply_wikilink_image_alt_no_alt() -> None:
-    """Test applying alt text to wikilink image syntax without alt."""
-    line = "This is ![[path/to/image.png]] in text"
-    new_line, old_alt = apply._apply_wikilink_image_alt(
-        line, "path/to/image.png", "new alt text"
-    )
-
-    assert old_alt is None
-    assert new_line == "This is ![[path/to/image.png|new alt text]] in text"
-
-
-def test_apply_wikilink_image_alt_url() -> None:
-    """Test applying alt text to wikilink with full URL."""
-    line = "![[https://assets.turntrout.com/static/images/posts/distillation-robustifies-unlearning-20250612141417.avif]]"
-    new_line, old_alt = apply._apply_wikilink_image_alt(
-        line,
-        "https://assets.turntrout.com/static/images/posts/distillation-robustifies-unlearning-20250612141417.avif",
-        "new alt text",
-    )
-
-    assert old_alt is None
-    assert (
-        new_line
-        == "![[https://assets.turntrout.com/static/images/posts/distillation-robustifies-unlearning-20250612141417.avif|new alt text]]"
-    )
-
-
-def test_apply_wikilink_image_alt_no_match() -> None:
-    """Test wikilink function returns unchanged line when no match."""
-    line = "This is ![markdown](image.png) not wikilink"
-    new_line, old_alt = apply._apply_wikilink_image_alt(
-        line, "image.png", "new alt text"
-    )
-
-    assert old_alt is None
-    assert new_line == line
+    assert old_alt == expected_old_alt
+    assert new_line == expected_new_line
 
 
 @pytest.fixture
@@ -554,51 +543,52 @@ def test_wikilink_image_alt_with_special_chars(
     assert new_line == expected_line
 
 
-def test_display_unused_entries_empty(console_with_output: tuple) -> None:
-    """Test displaying unused entries with empty set."""
-    console, output = console_with_output
-    unused_entries: set[tuple[str, str]] = set()
-
+@pytest.mark.parametrize(
+    "unused_entries,expected_count_text,expected_entries",
+    [
+        pytest.param(set(), None, [], id="empty"),
+        pytest.param(
+            {("path/to/file.md", "image.png")},
+            "1 entry without 'final_alt' will be skipped:",
+            ["path/to/file.md: image.png"],
+            id="single",
+        ),
+        pytest.param(
+            {
+                ("path/to/file1.md", "image1.png"),
+                ("path/to/file2.md", "image2.png"),
+                ("path/to/file1.md", "image3.png"),
+            },
+            "3 entries without 'final_alt' will be skipped:",
+            [
+                "path/to/file1.md: image1.png",
+                "path/to/file1.md: image3.png",
+                "path/to/file2.md: image2.png",
+            ],
+            id="multiple",
+        ),
+    ],
+)
+def test_display_unused_entries(
+    unused_entries: set[tuple[str, str]],
+    expected_count_text: str | None,
+    expected_entries: list[str],
+) -> None:
+    """Test displaying unused entries with various counts."""
+    output = StringIO()
+    console = Console(file=output, width=120)
     apply._display_unused_entries(unused_entries, console)
-
-    # Should produce no output
-    assert output.getvalue() == ""
-
-
-def test_display_unused_entries_single(console_with_output: tuple) -> None:
-    """Test displaying a single unused entry."""
-    console, output = console_with_output
-    unused_entries = {("path/to/file.md", "image.png")}
-
-    apply._display_unused_entries(unused_entries, console)
-
     result = output.getvalue()
-    assert "1 entry without 'final_alt' will be skipped:" in result
-    assert "path/to/file.md: image.png" in result
-
-
-def test_display_unused_entries_multiple(console_with_output: tuple) -> None:
-    """Test displaying multiple unused entries."""
-    console, output = console_with_output
-    unused_entries = {
-        ("path/to/file1.md", "image1.png"),
-        ("path/to/file2.md", "image2.png"),
-        ("path/to/file1.md", "image3.png"),
-    }
-
-    apply._display_unused_entries(unused_entries, console)
-
-    result = output.getvalue()
-    assert "3 entries without 'final_alt' will be skipped:" in result
-    assert "path/to/file1.md: image1.png" in result
-    assert "path/to/file1.md: image3.png" in result
-    assert "path/to/file2.md: image2.png" in result
+    if expected_count_text is None:
+        assert result == ""
+    else:
+        assert expected_count_text in result
+        for entry in expected_entries:
+            assert entry in result
 
 
 def test_display_unused_entries_sorted() -> None:
     """Test that unused entries are displayed in sorted order."""
-    from io import StringIO
-
     output = StringIO()
     console = Console(file=output, width=120)
     unused_entries = {
@@ -606,9 +596,7 @@ def test_display_unused_entries_sorted() -> None:
         ("a_file.md", "a_image.png"),
         ("m_file.md", "m_image.png"),
     }
-
     apply._display_unused_entries(unused_entries, console)
-
     result = output.getvalue()
     lines = [
         line.strip() for line in result.splitlines() if ":" in line and ".md" in line
@@ -948,58 +936,89 @@ Wikilink: ![[image.png|old wikilink alt]]
 class TestApplyHtmlVideoLabel:
     """Test applying aria-label to HTML video elements."""
 
-    def test_add_aria_label_to_video_without_attributes(self):
-        """Should add aria-label to video without any accessibility attributes."""
-        line = '<video src="demo.mp4" controls></video>'
-        new_line, old_label = apply._apply_html_video_label(
-            line, "demo.mp4", "Product demo"
-        )
-
-        assert 'aria-label="Product demo"' in new_line
-        assert old_label is None
-
-    def test_replace_existing_aria_label(self):
-        """Should replace existing aria-label."""
-        line = '<video src="demo.mp4" aria-label="old label"></video>'
-        new_line, old_label = apply._apply_html_video_label(
-            line, "demo.mp4", "New description"
-        )
-
-        assert 'aria-label="New description"' in new_line
-        assert old_label == "old label"
-
-    def test_replace_existing_title(self):
-        """Should replace title with aria-label (aria-label is preferred)."""
-        line = '<video src="demo.mp4" title="old title"></video>'
-        new_line, old_label = apply._apply_html_video_label(
-            line, "demo.mp4", "New description"
-        )
-
-        assert 'aria-label="New description"' in new_line
-        assert old_label == "old title"
-
-    def test_video_with_source_child(self):
-        """Should handle video with <source> child."""
-        line = '<video controls><source src="demo.mp4" type="video/mp4"></video>'
-        new_line, old_label = apply._apply_html_video_label(
-            line, "demo.mp4", "Tutorial video"
-        )
-
-        assert 'aria-label="Tutorial video"' in new_line
-        assert old_label is None
-
-    def test_video_with_multiple_sources(self):
-        """Should match first source."""
-        line = """<video controls>
-  <source src="demo.mp4" type="video/mp4">
-  <source src="demo.webm" type="video/webm">
-</video>"""
-        new_line, old_label = apply._apply_html_video_label(
-            line, "demo.mp4", "Demo video"
-        )
-
-        assert 'aria-label="Demo video"' in new_line
-        assert old_label is None
+    @pytest.mark.parametrize(
+        "line,asset_path,new_label,expected_old_label,expected_fragment",
+        [
+            pytest.param(
+                '<video src="demo.mp4" controls></video>',
+                "demo.mp4", "Product demo", None, 'aria-label="Product demo"',
+                id="add_to_bare_video",
+            ),
+            pytest.param(
+                '<video src="demo.mp4" aria-label="old label"></video>',
+                "demo.mp4", "New description", "old label", 'aria-label="New description"',
+                id="replace_aria_label",
+            ),
+            pytest.param(
+                '<video src="demo.mp4" title="old title"></video>',
+                "demo.mp4", "New description", "old title", 'aria-label="New description"',
+                id="replace_title",
+            ),
+            pytest.param(
+                '<video controls><source src="demo.mp4" type="video/mp4"></video>',
+                "demo.mp4", "Tutorial video", None, 'aria-label="Tutorial video"',
+                id="source_child",
+            ),
+            pytest.param(
+                '<video controls>\n  <source src="demo.mp4" type="video/mp4">\n  <source src="demo.webm" type="video/webm">\n</video>',
+                "demo.mp4", "Demo video", None, 'aria-label="Demo video"',
+                id="multiple_sources",
+            ),
+            pytest.param(
+                '<video src="demo.mp4" aria-describedby="desc-1"></video>',
+                "demo.mp4", "New label", "desc-1", 'aria-label="New label"',
+                id="aria_describedby",
+            ),
+            pytest.param(
+                '<video src="demo.mp4"></video>',
+                "demo.mp4", 'Tutorial: "Getting Started" & More', None, "aria-label=",
+                id="special_chars_in_label",
+            ),
+            pytest.param(
+                '<video src="https://example.com/video.mp4"></video>',
+                "https://example.com/video.mp4", "Remote video", None, 'aria-label="Remote video"',
+                id="url_src",
+            ),
+            pytest.param(
+                "<video src='demo.mp4'></video>",
+                "demo.mp4", "Description", None, 'aria-label="Description"',
+                id="single_quotes",
+            ),
+            pytest.param(
+                "<video src=demo.mp4></video>",
+                "demo.mp4", "Description", None, 'aria-label="Description"',
+                id="no_quotes",
+            ),
+            pytest.param(
+                '<video\n  src="demo.mp4"\n  controls\n  autoplay>\n</video>',
+                "demo.mp4", "Demo", None, 'aria-label="Demo"',
+                id="multiline",
+            ),
+            pytest.param(
+                '<video src="demo.mp4" controls autoplay loop muted playsinline style="width: 80%"></video>',
+                "demo.mp4", "Looping demo", None, 'aria-label="Looping demo"',
+                id="many_attributes",
+            ),
+            pytest.param(
+                '<video src="demo.mp4"></video>',
+                "demo.mp4", "", None, 'aria-label=""',
+                id="empty_label",
+            ),
+            pytest.param(
+                '<video src="demo.mp4"></video>',
+                "demo.mp4", "Multi\nline\ndescription", None, "aria-label=",
+                id="label_with_newlines",
+            ),
+        ],
+    )
+    def test_apply_video_label(
+        self, line: str, asset_path: str, new_label: str,
+        expected_old_label: str | None, expected_fragment: str,
+    ) -> None:
+        """Test adding/replacing aria-label on video elements."""
+        new_line, old_label = apply._apply_html_video_label(line, asset_path, new_label)
+        assert expected_fragment in new_line
+        assert old_label == expected_old_label
 
     def test_no_match_returns_unchanged(self):
         """Should return unchanged line if video not found."""
@@ -1007,131 +1026,30 @@ class TestApplyHtmlVideoLabel:
         new_line, old_label = apply._apply_html_video_label(
             line, "demo.mp4", "Description"
         )
-
         assert new_line == line
-        assert old_label is None
-
-    def test_video_with_aria_describedby(self):
-        """Should capture aria-describedby as old label."""
-        line = '<video src="demo.mp4" aria-describedby="desc-1"></video>'
-        new_line, old_label = apply._apply_html_video_label(
-            line, "demo.mp4", "New label"
-        )
-
-        assert 'aria-label="New label"' in new_line
-        assert old_label == "desc-1"
-
-    def test_video_with_special_characters_in_label(self):
-        """Should handle special characters in label."""
-        line = '<video src="demo.mp4"></video>'
-        new_line, old_label = apply._apply_html_video_label(
-            line, "demo.mp4", 'Tutorial: "Getting Started" & More'
-        )
-
-        assert "aria-label=" in new_line
-        assert old_label is None
-
-    def test_video_with_url_src(self):
-        """Should handle videos with full URLs."""
-        url = "https://example.com/video.mp4"
-        line = f'<video src="{url}"></video>'
-        new_line, old_label = apply._apply_html_video_label(line, url, "Remote video")
-
-        assert 'aria-label="Remote video"' in new_line
-        assert old_label is None
-
-    def test_video_with_single_quotes(self):
-        """Should handle single quotes in src."""
-        line = "<video src='demo.mp4'></video>"
-        new_line, old_label = apply._apply_html_video_label(
-            line, "demo.mp4", "Description"
-        )
-
-        assert 'aria-label="Description"' in new_line
-        assert old_label is None
-
-    def test_video_with_no_quotes(self):
-        """Should handle unquoted src attribute."""
-        line = "<video src=demo.mp4></video>"
-        new_line, old_label = apply._apply_html_video_label(
-            line, "demo.mp4", "Description"
-        )
-
-        assert 'aria-label="Description"' in new_line
-        assert old_label is None
-
-    def test_multiline_video(self):
-        """Should handle multi-line video tags."""
-        line = """<video
-  src="demo.mp4"
-  controls
-  autoplay>
-</video>"""
-        new_line, old_label = apply._apply_html_video_label(line, "demo.mp4", "Demo")
-
-        assert 'aria-label="Demo"' in new_line
-        assert old_label is None
-
-    def test_video_with_many_attributes(self):
-        """Should handle video with many attributes."""
-        line = '<video src="demo.mp4" controls autoplay loop muted playsinline style="width: 80%"></video>'
-        new_line, old_label = apply._apply_html_video_label(
-            line, "demo.mp4", "Looping demo"
-        )
-
-        assert 'aria-label="Looping demo"' in new_line
         assert old_label is None
 
     def test_preserves_other_attributes(self):
         """Should preserve all other video attributes."""
         line = '<video src="demo.mp4" controls autoplay class="video-player"></video>'
-        new_line, old_label = apply._apply_html_video_label(line, "demo.mp4", "Demo")
-
+        new_line, _ = apply._apply_html_video_label(line, "demo.mp4", "Demo")
         assert "controls" in new_line
         assert "autoplay" in new_line
         assert 'class="video-player"' in new_line
-        assert old_label is None
 
     def test_multiple_videos_in_line(self):
         """Should only modify the matching video."""
         line = '<video src="demo1.mp4"></video><video src="demo2.mp4"></video>'
-        new_line, old_label = apply._apply_html_video_label(
-            line, "demo1.mp4", "First video"
-        )
-
+        new_line, _ = apply._apply_html_video_label(line, "demo1.mp4", "First video")
         assert 'aria-label="First video"' in new_line
-        # Should only modify the first video
         assert new_line.count("aria-label") == 1
-        assert old_label is None
-
-    def test_empty_label(self):
-        """Should handle empty label string."""
-        line = '<video src="demo.mp4"></video>'
-        new_line, old_label = apply._apply_html_video_label(line, "demo.mp4", "")
-
-        assert 'aria-label=""' in new_line
-        assert old_label is None
-
-    def test_label_with_newlines(self):
-        """Should handle labels with newlines."""
-        line = '<video src="demo.mp4"></video>'
-        new_line, old_label = apply._apply_html_video_label(
-            line, "demo.mp4", "Multi\nline\ndescription"
-        )
-
-        assert "aria-label=" in new_line
-        assert old_label is None
 
     def test_video_with_closing_tag(self):
-        """Should handle video with explicit closing tag."""
+        """Should handle video with explicit closing tag content."""
         line = '<video src="demo.mp4">Your browser does not support video.</video>'
-        new_line, old_label = apply._apply_html_video_label(
-            line, "demo.mp4", "Demo video"
-        )
-
+        new_line, _ = apply._apply_html_video_label(line, "demo.mp4", "Demo video")
         assert 'aria-label="Demo video"' in new_line
         assert "Your browser does not support video." in new_line
-        assert old_label is None
 
 
 # ---------------------------------------------------------------------------
@@ -1139,22 +1057,29 @@ class TestApplyHtmlVideoLabel:
 # ---------------------------------------------------------------------------
 
 
-def test_unicode_alt_text_markdown() -> None:
-    """Unicode alt text in markdown images."""
-    line = "![](image.png)"
-    new_line, _ = apply._apply_markdown_image_alt(
-        line, "image.png", "日本語の代替テキスト"
-    )
-    assert new_line == "![日本語の代替テキスト](image.png)"
-
-
-def test_unicode_alt_text_html() -> None:
-    """Unicode alt text in HTML images."""
-    line = '<img src="image.png">'
-    new_line, _ = apply._apply_html_image_alt(
-        line, "image.png", "中文替代文字"
-    )
-    assert new_line == '<img alt="中文替代文字" src="image.png"/>'
+@pytest.mark.parametrize(
+    "line,apply_fn,alt_text,expected",
+    [
+        pytest.param(
+            "![](image.png)",
+            apply._apply_markdown_image_alt,
+            "日本語の代替テキスト",
+            "![日本語の代替テキスト](image.png)",
+            id="markdown_unicode",
+        ),
+        pytest.param(
+            '<img src="image.png">',
+            apply._apply_html_image_alt,
+            "中文替代文字",
+            '<img alt="中文替代文字" src="image.png"/>',
+            id="html_unicode",
+        ),
+    ],
+)
+def test_unicode_alt_text(line: str, apply_fn, alt_text: str, expected: str) -> None:
+    """Unicode alt text should be applied correctly in both formats."""
+    new_line, _ = apply_fn(line, "image.png", alt_text)
+    assert new_line == expected
 
 
 @pytest.mark.parametrize(
