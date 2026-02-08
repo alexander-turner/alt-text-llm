@@ -87,13 +87,16 @@ def test_run_llm_success(temp_dir: Path) -> None:
     mock_result.stdout = "Generated alt text"
     mock_result.stderr = ""
 
-    with patch("subprocess.run", return_value=mock_result) as mock_run:
+    with (
+        patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/llm"),
+        patch("subprocess.run", return_value=mock_result) as mock_run,
+    ):
         result = generate._run_llm(attachment, prompt, model, timeout)
 
         assert result == "Generated alt text"
         mock_run.assert_called_once()
         call_args = mock_run.call_args[0][0]
-        assert "llm" in call_args[0]
+        assert call_args[0] == "/usr/bin/llm"
         assert "-m" in call_args
         assert model in call_args
         assert "-a" in call_args
@@ -155,7 +158,10 @@ def test_run_llm_failure(temp_dir: Path) -> None:
     mock_result.stdout = ""
     mock_result.stderr = "LLM error"
 
-    with patch("subprocess.run", return_value=mock_result):
+    with (
+        patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/llm"),
+        patch("subprocess.run", return_value=mock_result),
+    ):
         with pytest.raises(
             utils.AltGenerationError,
             match="Caption generation failed",
@@ -176,7 +182,10 @@ def test_run_llm_empty_output(temp_dir: Path) -> None:
     mock_result.stdout = "   "  # Only whitespace
     mock_result.stderr = ""
 
-    with patch("subprocess.run", return_value=mock_result):
+    with (
+        patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/llm"),
+        patch("subprocess.run", return_value=mock_result),
+    ):
         with pytest.raises(
             utils.AltGenerationError,
             match="LLM returned empty caption",

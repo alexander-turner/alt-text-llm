@@ -137,12 +137,11 @@ def _extract_html_img_info(token: Token) -> list[tuple[str, str | None]]:
     infos: list[tuple[str, str | None]] = []
 
     for img in soup.find_all("img"):
-        src_raw = img.get("src")
+        src = img.get("src") or None
         alt_raw = img.get("alt")
-        src = str(src_raw) if src_raw is not None else None
         alt = str(alt_raw) if alt_raw is not None else None
         if src:
-            infos.append((src, alt))
+            infos.append((str(src), alt))
 
     return infos
 
@@ -162,16 +161,12 @@ def _extract_html_video_info(token: Token) -> list[tuple[str, dict[str, str | No
             src_raw = source.get("src") if source else None
 
         if src_raw:
-            src = str(src_raw)
-            aria_label = video.get("aria-label")
-            title = video.get("title")
-            aria_describedby = video.get("aria-describedby")
             accessibility_attrs: dict[str, str | None] = {
-                "aria_label": str(aria_label) if aria_label is not None else None,
-                "title": str(title) if title is not None else None,
-                "aria_describedby": str(aria_describedby) if aria_describedby is not None else None,
+                "aria_label": video.get("aria-label") or None,
+                "title": video.get("title") or None,
+                "aria_describedby": video.get("aria-describedby") or None,
             }
-            infos.append((src, accessibility_attrs))
+            infos.append((str(src_raw), accessibility_attrs))
 
     return infos
 
@@ -180,31 +175,17 @@ def _get_line_number(token: Token, lines: Sequence[str], search_snippet: str) ->
     if token.map:
         return token.map[0] + 1
 
-    # Try exact match first
-    for idx, ln in enumerate(lines):
-        if search_snippet in ln:
-            return idx + 1
-
-    # If exact match fails, try URL-decoded version
-    # (markdown-it URL-encodes Unicode chars in src attrs)
-    decoded_snippet = unquote(search_snippet)
-    if decoded_snippet != search_snippet:
-        for idx, ln in enumerate(lines):
-            if decoded_snippet in ln:
-                return idx + 1
-
-    # If still no match, try stripping parentheses for flexible search
+    # Build candidate snippets: exact, URL-decoded, without parens, decoded without parens.
+    # markdown-it URL-encodes Unicode chars in src attrs, so we try decoded variants.
+    candidates = [search_snippet, unquote(search_snippet)]
     if search_snippet.startswith("(") and search_snippet.endswith(")"):
-        asset_path = search_snippet[1:-1]  # Remove parentheses
+        inner = search_snippet[1:-1]
+        candidates += [inner, unquote(inner)]
+
+    for candidate in dict.fromkeys(candidates):
         for idx, ln in enumerate(lines):
-            if asset_path in ln:
+            if candidate in ln:
                 return idx + 1
-        # Also try URL-decoded without parens
-        decoded_path = unquote(asset_path)
-        if decoded_path != asset_path:
-            for idx, ln in enumerate(lines):
-                if decoded_path in ln:
-                    return idx + 1
 
     raise ValueError(f"Could not find asset '{search_snippet}' in markdown file")
 
@@ -225,10 +206,8 @@ def _handle_md_asset(
         missing or placeholder alt text.
     """
 
-    src_raw = token.attrGet("src")
-    src_attr: str | None = str(src_raw) if src_raw is not None else None
-
-    alt_text: str | None = token.content  # alt stored here
+    src_attr = token.attrGet("src") or None
+    alt_text = token.content or None
     if not src_attr or _is_alt_meaningful(alt_text):
         return []
 
@@ -326,7 +305,7 @@ def _iter_wikilink_images(content: str) -> Iterable[tuple[str, str | None]]:
             src, alt = inner, None
 
         src = src.strip()
-        alt = alt.strip() if alt is not None else None
+        alt = (alt.strip() or None) if alt else None
 
         if src:
             yield src, alt
@@ -388,8 +367,8 @@ def _process_file(md_path: Path) -> list[QueueItem]:
             soup = BeautifulSoup(token.content, "html.parser")
             if soup.find("video"):
                 video_items = _handle_html_video(token, md_path, lines)
-                for vi in video_items:
-                    processed_video_assets.add(vi.asset_path)
+                for video_item in video_items:
+                    processed_video_assets.add(video_item.asset_path)
                 token_items.extend(video_items)
             # Always check for wikilinks in inline tokens
             token_items.extend(_handle_wikilink_asset(token, md_path, lines))

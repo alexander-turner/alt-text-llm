@@ -1145,7 +1145,7 @@ def test_unicode_alt_text_markdown() -> None:
     new_line, _ = apply._apply_markdown_image_alt(
         line, "image.png", "日本語の代替テキスト"
     )
-    assert "![日本語の代替テキスト](image.png)" in new_line
+    assert new_line == "![日本語の代替テキスト](image.png)"
 
 
 def test_unicode_alt_text_html() -> None:
@@ -1154,7 +1154,7 @@ def test_unicode_alt_text_html() -> None:
     new_line, _ = apply._apply_html_image_alt(
         line, "image.png", "中文替代文字"
     )
-    assert "中文替代文字" in new_line
+    assert new_line == '<img alt="中文替代文字" src="image.png"/>'
 
 
 def test_apply_preserves_trailing_newline(temp_dir: Path, console: Console) -> None:
