@@ -523,7 +523,7 @@ def test_video_detection(tmp_path: Path, video_html: str, should_detect: bool):
     queue = scan.build_queue(tmp_path)
     if should_detect:
         assert len(queue) == 1
-        assert "demo.mp4" in queue[0].asset_path
+        assert queue[0].asset_path == "demo.mp4"
     else:
         assert len(queue) == 0
 

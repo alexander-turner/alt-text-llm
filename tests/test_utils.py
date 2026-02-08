@@ -572,7 +572,10 @@ class TestConvertAvifToPng:
 
         create_test_image(avif_file, "100x100")
 
-        with patch("subprocess.run") as mock_run:
+        with (
+            patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/magick"),
+            patch("subprocess.run") as mock_run,
+        ):
             mock_run.return_value = None
             result = utils._convert_avif_to_png(avif_file, temp_dir)
 
@@ -581,7 +584,7 @@ class TestConvertAvifToPng:
 
             # Verify exact command structure
             call_args = mock_run.call_args[0][0]
-            assert call_args[0].endswith("magick")
+            assert call_args[0] == "/usr/bin/magick"
             assert call_args[1] == str(avif_file)
             assert call_args[2] == str(png_file)
             assert len(call_args) == 3  # Should be exactly 3 arguments
@@ -597,7 +600,10 @@ class TestConvertAvifToPng:
         avif_file = temp_dir / "test.avif"
         avif_file.write_bytes(b"invalid avif data")
 
-        with patch("subprocess.run") as mock_run:
+        with (
+            patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/magick"),
+            patch("subprocess.run") as mock_run,
+        ):
             mock_run.side_effect = subprocess.CalledProcessError(
                 1, "magick", stderr="Conversion failed"
             )
@@ -626,7 +632,10 @@ class TestConvertGifToMp4:
         mp4_file = temp_dir / "test.mp4"
         create_test_image(gif_file, "100x100")
 
-        with patch("subprocess.run") as mock_run:
+        with (
+            patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/ffmpeg"),
+            patch("subprocess.run") as mock_run,
+        ):
             mock_run.return_value = None
             result = utils._convert_gif_to_mp4(gif_file, temp_dir)
 
@@ -647,7 +656,10 @@ class TestConvertGifToMp4:
         gif_file = temp_dir / "test.gif"
         gif_file.write_bytes(b"invalid gif data")
 
-        with patch("subprocess.run") as mock_run:
+        with (
+            patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/ffmpeg"),
+            patch("subprocess.run") as mock_run,
+        ):
             exc = subprocess.CalledProcessError(
                 1, "ffmpeg", stderr="Conversion failed"
             )
@@ -714,7 +726,10 @@ class TestDownloadAsset:
 
         base_queue_item.asset_path = "image.avif"
 
-        with patch("subprocess.run") as mock_run:
+        with (
+            patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/magick"),
+            patch("subprocess.run") as mock_run,
+        ):
             mock_run.return_value = None
             result = utils.download_asset(base_queue_item, temp_dir)
 
@@ -753,14 +768,17 @@ class TestDownloadAsset:
         mock_response.iter_content.return_value = [b"fake", b"avif", b"data"]
         mock_response.raise_for_status.return_value = None
 
-        with patch("requests.get", return_value=mock_response):
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = None
-                result = utils.download_asset(base_queue_item, temp_dir)
+        with (
+            patch("requests.get", return_value=mock_response),
+            patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/magick"),
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = None
+            result = utils.download_asset(base_queue_item, temp_dir)
 
-                # Should have converted to PNG
-                assert result.suffix == ".png"
-                mock_run.assert_called_once()
+            # Should have converted to PNG
+            assert result.suffix == ".png"
+            mock_run.assert_called_once()
 
     def test_file_not_found(
         self, temp_dir: Path, base_queue_item: scan.QueueItem
