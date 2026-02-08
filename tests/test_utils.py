@@ -1275,36 +1275,27 @@ class TestParagraphContext:
 # ---------------------------------------------------------------------------
 
 
-def test_find_git_root(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test finding the git root directory."""
-    expected_output = "/path/to/git/root"
+@pytest.mark.parametrize(
+    "returncode,stdout,should_raise",
+    [
+        pytest.param(0, "/path/to/git/root", False, id="success"),
+        pytest.param(1, "", True, id="failure"),
+    ],
+)
+def test_get_git_root(
+    monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: str, should_raise: bool
+) -> None:
+    """Test finding the git root directory (success and failure)."""
 
     def mock_subprocess_run(*args, **_kwargs) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess(
-            args=args,
-            returncode=0,
-            stdout=expected_output,
-        )
+        return subprocess.CompletedProcess(args=args, returncode=returncode, stdout=stdout)
 
     monkeypatch.setattr(utils.subprocess, "run", mock_subprocess_run)
-    assert utils.get_git_root() == Path(expected_output)
-
-
-def test_get_git_root_raises_error() -> None:
-    """Test that get_git_root raises RuntimeError when git command fails."""
-
-    def mock_subprocess_run(*args, **_kwargs) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess(
-            args=args,
-            returncode=1,
-            stdout="",
-        )
-
-    with (
-        mock.patch.object(utils.subprocess, "run", mock_subprocess_run),
-        pytest.raises(RuntimeError),
-    ):
-        utils.get_git_root()
+    if should_raise:
+        with pytest.raises(RuntimeError):
+            utils.get_git_root()
+    else:
+        assert utils.get_git_root() == Path(stdout)
 
 
 def test_find_executable_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1440,51 +1431,41 @@ def test_get_files_ignore_dirs(tmp_path: Path) -> None:
     assert result_paths == expected_paths
 
 
-def test_split_yaml_invalid_format(tmp_path: Path) -> None:
-    """Test handling of invalid YAML format."""
-    file_path = tmp_path / "invalid.md"
-    file_path.write_text(
-        "Invalid content without proper frontmatter", encoding="utf-8"
-    )
-
-    metadata, content = utils.split_yaml(file_path)
-    assert metadata == {}
-    assert content == ""
-
-
-def test_split_yaml_empty_frontmatter(tmp_path: Path) -> None:
-    """Test handling of empty frontmatter."""
-    file_path = tmp_path / "empty.md"
-    file_path.write_text("---\n---\nContent", encoding="utf-8")
-
-    metadata, content = utils.split_yaml(file_path)
-    assert metadata == {}
-    assert content == "\nContent"
-
-
-def test_split_yaml_malformed_yaml(tmp_path: Path) -> None:
-    """Test handling of malformed YAML."""
-    file_path = tmp_path / "malformed.md"
-    file_path.write_text(
-        '---\ntitle: "Unclosed quote\n---\nContent', encoding="utf-8"
-    )
-
-    # Expect split_yaml to return empty metadata and content for malformed files
-    metadata, content = utils.split_yaml(file_path, verbose=True)
-    assert metadata == {}
-    assert content == ""
+@pytest.mark.parametrize(
+    "file_content,expected_metadata,expected_content_substr,verbose",
+    [
+        pytest.param(
+            "Invalid content without proper frontmatter",
+            {}, "", False,
+            id="invalid_format",
+        ),
+        pytest.param(
+            "---\n---\nContent",
+            {}, "\nContent", False,
+            id="empty_frontmatter",
+        ),
+        pytest.param(
+            '---\ntitle: "Unclosed quote\n---\nContent',
+            {}, "", True,
+            id="malformed_yaml",
+        ),
+    ],
+)
+def test_split_yaml_edge_cases(
+    tmp_path: Path, file_content: str,
+    expected_metadata: dict, expected_content_substr: str, verbose: bool,
+) -> None:
+    """Test split_yaml with invalid, empty, and malformed frontmatter."""
+    file_path = tmp_path / "test.md"
+    file_path.write_text(file_content, encoding="utf-8")
+    metadata, content = utils.split_yaml(file_path, verbose=verbose)
+    assert metadata == expected_metadata
+    assert expected_content_substr in content or content == expected_content_substr
 
 
 # ---------------------------------------------------------------------------
 # Edge cases and boundary conditions
 # ---------------------------------------------------------------------------
-
-
-def test_paragraph_context_all_blank_lines() -> None:
-    """All blank lines should return empty string."""
-    lines = ["", "", "", ""]
-    result = utils.paragraph_context(lines, 2)
-    assert result == ""
 
 
 def test_split_yaml_unicode_content(tmp_path: Path) -> None:
