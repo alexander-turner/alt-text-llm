@@ -259,3 +259,65 @@ async def test_async_generate_suggestions(
     }
     actual_suggestions = {result.suggested_alt for result in results}
     assert actual_suggestions == expected_suggestions
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_generate_empty_queue(temp_dir: Path) -> None:
+    """Async generation with empty queue should return empty list."""
+    options = generate.GenerateAltTextOptions(
+        root=temp_dir,
+        model="test",
+        max_chars=100,
+        timeout=10,
+        output_path=temp_dir / "out.json",
+    )
+    results = await generate.async_generate_suggestions([], options)
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_async_generate_with_individual_errors(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Async generation should handle individual failures gracefully."""
+    queue_items = [
+        scan.QueueItem(
+            markdown_file="test.md",
+            asset_path=f"image{i}.jpg",
+            line_number=i + 1,
+            context_snippet=f"ctx{i}",
+        )
+        for i in range(5)
+    ]
+
+    def failing_download(qi, workspace):
+        if "image2" in qi.asset_path:
+            raise FileNotFoundError("Not found")
+        target = workspace / "asset.jpg"
+        target.write_bytes(b"data")
+        return target
+
+    def fake_run_llm(attachment, prompt, model, timeout):
+        return "caption"
+
+    def fake_context(qi, **kwargs):
+        return qi.context_snippet
+
+    monkeypatch.setattr(utils, "download_asset", failing_download)
+    monkeypatch.setattr(generate, "_run_llm", fake_run_llm)
+    monkeypatch.setattr(utils, "generate_article_context", fake_context)
+
+    options = generate.GenerateAltTextOptions(
+        root=temp_dir,
+        model="test",
+        max_chars=100,
+        timeout=10,
+        output_path=temp_dir / "out.json",
+    )
+    results = await generate.async_generate_suggestions(queue_items, options)
+    assert len(results) == 4  # 4 out of 5 should succeed

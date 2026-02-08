@@ -125,7 +125,8 @@ def _apply_html_tag_attribute(
         if resolved_src != asset_path:
             continue
 
-        old_value = next((el.get(a) for a in read_old_from if el.get(a)), None)
+        old_value_raw = next((el.get(a) for a in read_old_from if el.get(a)), None)
+        old_value = str(old_value_raw) if old_value_raw is not None else None
         el[write_attr] = new_value
         return str(soup), old_value
 

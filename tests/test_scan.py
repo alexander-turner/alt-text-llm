@@ -538,3 +538,155 @@ def test_mixed_images_and_videos(tmp_path: Path):
     assert len(queue) == 3
     paths = {item.asset_path for item in queue}
     assert paths == {"image.png", "demo.mp4", "photo.jpg"}
+
+
+# ---------------------------------------------------------------------------
+# Edge cases and boundary conditions
+# ---------------------------------------------------------------------------
+
+
+def test_empty_file(tmp_path: Path) -> None:
+    """Empty markdown file should produce no queue items."""
+    (tmp_path / "empty.md").write_text("", encoding="utf-8")
+    assert scan.build_queue(tmp_path) == []
+
+
+def test_file_with_only_frontmatter(tmp_path: Path) -> None:
+    """File with only YAML frontmatter and no body."""
+    (tmp_path / "fm.md").write_text("---\ntitle: hello\n---\n", encoding="utf-8")
+    assert scan.build_queue(tmp_path) == []
+
+
+def test_hundreds_of_images(tmp_path: Path) -> None:
+    """File with 500 images should all be detected."""
+    lines = [f"![](image_{i}.png)" for i in range(500)]
+    (tmp_path / "big.md").write_text("\n\n".join(lines), encoding="utf-8")
+    queue = scan.build_queue(tmp_path)
+    assert len(queue) == 500
+
+
+def test_image_inside_code_block_ignored(tmp_path: Path) -> None:
+    """Images inside fenced code blocks should NOT be detected."""
+    content = textwrap.dedent("""\
+        # Docs
+
+        ```markdown
+        ![](code_image.png)
+        ```
+
+        ![](real_image.png)
+    """)
+    (tmp_path / "code.md").write_text(content, encoding="utf-8")
+    queue = scan.build_queue(tmp_path)
+    paths = {item.asset_path for item in queue}
+    assert "real_image.png" in paths
+    assert "code_image.png" not in paths
+
+
+def test_image_inside_inline_code_ignored(tmp_path: Path) -> None:
+    """Images inside inline code should NOT be detected."""
+    content = "Use `![](not_real.png)` syntax for images.\n\n![](real.png)\n"
+    (tmp_path / "inline_code.md").write_text(content, encoding="utf-8")
+    queue = scan.build_queue(tmp_path)
+    paths = {item.asset_path for item in queue}
+    assert "real.png" in paths
+    assert "not_real.png" not in paths
+
+
+def test_unicode_asset_path_markdown(tmp_path: Path) -> None:
+    """Markdown images with Unicode file names should be detected."""
+    content = "![](画像.png)\n"
+    (tmp_path / "unicode.md").write_text(content, encoding="utf-8")
+    queue = scan.build_queue(tmp_path)
+    assert len(queue) == 1
+    assert queue[0].asset_path == "画像.png"
+
+
+def test_unicode_asset_path_html(tmp_path: Path) -> None:
+    """HTML images with Unicode file names should be detected."""
+    content = '<img src="фото.jpg">\n'
+    (tmp_path / "unicode.md").write_text(content, encoding="utf-8")
+    queue = scan.build_queue(tmp_path)
+    paths = {item.asset_path for item in queue}
+    assert "фото.jpg" in paths
+
+
+def test_unicode_alt_text_is_meaningful(tmp_path: Path) -> None:
+    """Unicode alt text should be considered meaningful."""
+    content = "![日本語の説明](image.png)\n"
+    (tmp_path / "unicode_alt.md").write_text(content, encoding="utf-8")
+    queue = scan.build_queue(tmp_path)
+    assert len(queue) == 0
+
+
+def test_deeply_nested_html_img(tmp_path: Path) -> None:
+    """Deeply nested HTML img tags should be found."""
+    content = '<div><div><div><p><img src="nested.jpg"></p></div></div></div>\n'
+    (tmp_path / "nested.md").write_text(content, encoding="utf-8")
+    queue = scan.build_queue(tmp_path)
+    paths = {item.asset_path for item in queue}
+    assert "nested.jpg" in paths
+
+
+def test_malformed_html_does_not_crash(tmp_path: Path) -> None:
+    """Malformed HTML should not crash the scanner."""
+    content = '<img src="ok.png">\n<img src="broken.jpg\n<img src=unclosed>\n'
+    (tmp_path / "malformed.md").write_text(content, encoding="utf-8")
+    queue = scan.build_queue(tmp_path)
+    paths = {item.asset_path for item in queue}
+    assert "ok.png" in paths
+
+
+def test_video_with_source_child(tmp_path: Path) -> None:
+    """Video tag using <source> child instead of src attribute."""
+    content = textwrap.dedent("""\
+        # Video Demo
+
+        Some intro text.
+
+        <video controls><source src="clip.mp4" type="video/mp4"></video>
+
+        After video text.
+    """)
+    (tmp_path / "source_video.md").write_text(content, encoding="utf-8")
+    queue = scan.build_queue(tmp_path)
+    found_clip = any(item.asset_path == "clip.mp4" for item in queue)
+    assert found_clip, f"Expected clip.mp4 in queue, got: {[i.asset_path for i in queue]}"
+
+
+def test_multiple_files_in_directory(tmp_path: Path) -> None:
+    """Scanning a directory with multiple markdown files."""
+    for i in range(10):
+        (tmp_path / f"file_{i}.md").write_text(
+            f"![](image_{i}.png)\n", encoding="utf-8"
+        )
+    queue = scan.build_queue(tmp_path)
+    assert len(queue) == 10
+
+
+def test_non_md_files_ignored(tmp_path: Path) -> None:
+    """Non-markdown files should be ignored."""
+    (tmp_path / "image.png").write_bytes(b"\x89PNG")
+    (tmp_path / "readme.txt").write_text("![](img.png)")
+    (tmp_path / "actual.md").write_text("![](real.png)\n")
+    queue = scan.build_queue(tmp_path)
+    assert len(queue) == 1
+    assert queue[0].asset_path == "real.png"
+
+
+def test_special_regex_chars_in_path_html(tmp_path: Path) -> None:
+    """HTML img handles paths with special characters correctly."""
+    content = '<img src="image (1).png">\n'
+    (tmp_path / "special_html.md").write_text(content, encoding="utf-8")
+    queue = scan.build_queue(tmp_path)
+    assert len(queue) == 1
+    assert queue[0].asset_path == "image (1).png"
+
+
+def test_url_assets_detected(tmp_path: Path) -> None:
+    """Remote URL assets should be detected."""
+    content = "![](https://example.com/img.jpg)\n"
+    (tmp_path / "url.md").write_text(content, encoding="utf-8")
+    queue = scan.build_queue(tmp_path)
+    assert len(queue) == 1
+    assert queue[0].asset_path == "https://example.com/img.jpg"

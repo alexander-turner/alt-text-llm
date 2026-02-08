@@ -488,3 +488,53 @@ def test_prefill_after_undo(temp_dir: Path) -> None:
         None,
         "accepted first",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_labeling_session_empty_suggestions() -> None:
+    """LabelingSession with no suggestions should be immediately complete."""
+    session = label.LabelingSession([])
+    assert session.is_complete()
+    assert session.get_current_suggestion() is None
+    assert session.get_progress() == (1, 0)
+
+
+def test_labeling_session_multiple_undos() -> None:
+    """Multiple consecutive undos should work correctly."""
+    suggestions = [create_alt(i) for i in range(1, 4)]
+    session = label.LabelingSession(suggestions)
+
+    for s in suggestions:
+        session.add_result(create_alt(s.line_number, final_alt=f"final_{s.line_number}"))
+
+    assert session.is_complete()
+
+    undone3 = session.undo()
+    assert undone3 is not None
+    assert undone3.final_alt == "final_3"
+
+    undone2 = session.undo()
+    assert undone2 is not None
+    assert undone2.final_alt == "final_2"
+
+    undone1 = session.undo()
+    assert undone1 is not None
+    assert undone1.final_alt == "final_1"
+
+    assert session.undo() is None
+    assert session.current_index == 0
+
+
+def test_label_suggestions_empty_list(temp_dir: Path) -> None:
+    """Labeling with empty suggestions should return 0."""
+    from io import StringIO
+
+    output = temp_dir / "output.json"
+    result = label.label_suggestions(
+        [], Console(file=StringIO()), output, append_mode=False
+    )
+    assert result == 0

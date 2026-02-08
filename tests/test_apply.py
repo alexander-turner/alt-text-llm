@@ -1,13 +1,14 @@
 """Tests for apply module."""
 
 import json
+import textwrap
+from io import StringIO
 from pathlib import Path
 
 import pytest
 from rich.console import Console
-from io import StringIO
 
-from alt_text_llm import apply, utils
+from alt_text_llm import apply, scan, utils
 
 
 @pytest.mark.parametrize(
@@ -1131,3 +1132,250 @@ class TestApplyHtmlVideoLabel:
         assert 'aria-label="Demo video"' in new_line
         assert "Your browser does not support video." in new_line
         assert old_label is None
+
+
+# ---------------------------------------------------------------------------
+# Edge cases and boundary conditions
+# ---------------------------------------------------------------------------
+
+
+def test_unicode_alt_text_markdown() -> None:
+    """Unicode alt text in markdown images."""
+    line = "![](image.png)"
+    new_line, _ = apply._apply_markdown_image_alt(
+        line, "image.png", "日本語の代替テキスト"
+    )
+    assert "![日本語の代替テキスト](image.png)" in new_line
+
+
+def test_unicode_alt_text_html() -> None:
+    """Unicode alt text in HTML images."""
+    line = '<img src="image.png">'
+    new_line, _ = apply._apply_html_image_alt(
+        line, "image.png", "中文替代文字"
+    )
+    assert "中文替代文字" in new_line
+
+
+def test_apply_preserves_trailing_newline(temp_dir: Path, console: Console) -> None:
+    """File with trailing newline should preserve it."""
+    md_path = temp_dir / "test.md"
+    md_path.write_text("![old](image.png)\n", encoding="utf-8")
+    caption = utils.AltGenerationResult(
+        markdown_file=str(md_path),
+        asset_path="image.png",
+        suggested_alt="s",
+        model="m",
+        context_snippet="c",
+        final_alt="new",
+    )
+    apply._apply_caption_to_file(md_path, caption, console)
+    assert md_path.read_text().endswith("\n")
+
+
+def test_apply_preserves_no_trailing_newline(temp_dir: Path, console: Console) -> None:
+    """File without trailing newline should NOT gain one."""
+    md_path = temp_dir / "test.md"
+    md_path.write_text("![old](image.png)", encoding="utf-8")
+    caption = utils.AltGenerationResult(
+        markdown_file=str(md_path),
+        asset_path="image.png",
+        suggested_alt="s",
+        model="m",
+        context_snippet="c",
+        final_alt="new",
+    )
+    apply._apply_caption_to_file(md_path, caption, console)
+    assert not md_path.read_text().endswith("\n")
+
+
+def test_apply_to_nonexistent_file(temp_dir: Path) -> None:
+    """Applying to a nonexistent file should warn, not crash."""
+    md_path = temp_dir / "nonexistent.md"
+    captions_path = temp_dir / "captions.json"
+    captions_data = [
+        {
+            "markdown_file": str(md_path),
+            "asset_path": "img.png",
+            "line_number": 1,
+            "suggested_alt": "s",
+            "final_alt": "new",
+            "model": "m",
+            "context_snippet": "c",
+        }
+    ]
+    captions_path.write_text(json.dumps(captions_data))
+    console = Console(file=StringIO())
+    result = apply.apply_captions(captions_path, console)
+    assert result == 0
+
+
+def test_apply_caption_asset_not_in_file(temp_dir: Path, console: Console) -> None:
+    """Applying caption when asset doesn't exist in the file."""
+    md_path = temp_dir / "test.md"
+    md_path.write_text("# No images here\n", encoding="utf-8")
+    caption = utils.AltGenerationResult(
+        markdown_file=str(md_path),
+        asset_path="nonexistent.png",
+        suggested_alt="s",
+        model="m",
+        context_snippet="c",
+        final_alt="new alt",
+    )
+    result = apply._apply_caption_to_file(md_path, caption, console)
+    assert result is None
+
+
+def test_apply_with_many_captions(temp_dir: Path) -> None:
+    """Apply 100 captions to a file with 100 images."""
+    md_path = temp_dir / "test.md"
+    lines = [f"![old_{i}](image_{i}.png)" for i in range(100)]
+    md_path.write_text("\n\n".join(lines) + "\n", encoding="utf-8")
+
+    captions_data = [
+        {
+            "markdown_file": str(md_path),
+            "asset_path": f"image_{i}.png",
+            "line_number": i * 2 + 1,
+            "suggested_alt": f"suggested_{i}",
+            "final_alt": f"new_caption_{i}",
+            "model": "m",
+            "context_snippet": "c",
+        }
+        for i in range(100)
+    ]
+    captions_path = temp_dir / "captions.json"
+    captions_path.write_text(json.dumps(captions_data))
+    console = Console(file=StringIO())
+    result = apply.apply_captions(captions_path, console)
+    assert result == 100
+
+    content = md_path.read_text()
+    for i in range(100):
+        assert f"![new_caption_{i}](image_{i}.png)" in content
+
+
+# ---------------------------------------------------------------------------
+# Integration / round-trip tests
+# ---------------------------------------------------------------------------
+
+
+def test_scan_then_apply_roundtrip(temp_dir: Path) -> None:
+    """Scan a file, create captions, apply them - full pipeline."""
+    md_path = temp_dir / "article.md"
+    md_content = textwrap.dedent("""\
+        # My Article
+
+        Here is an image:
+
+        ![](photo.jpg)
+
+        And another:
+
+        <img src="diagram.png">
+
+        And a wikilink:
+
+        ![[chart.svg]]
+    """)
+    md_path.write_text(md_content, encoding="utf-8")
+
+    queue = scan.build_queue(temp_dir)
+    assert len(queue) == 3
+
+    captions_data = [
+        {
+            "markdown_file": item.markdown_file,
+            "asset_path": item.asset_path,
+            "line_number": item.line_number,
+            "suggested_alt": f"Suggestion for {item.asset_path}",
+            "final_alt": f"Alt text for {item.asset_path}",
+            "model": "test-model",
+            "context_snippet": item.context_snippet,
+        }
+        for item in queue
+    ]
+
+    captions_path = temp_dir / "captions.json"
+    captions_path.write_text(json.dumps(captions_data))
+
+    console = Console(file=StringIO())
+    applied = apply.apply_captions(captions_path, console)
+    assert applied == 3
+
+    new_content = md_path.read_text()
+    assert "![Alt text for photo.jpg](photo.jpg)" in new_content
+    assert 'alt="Alt text for diagram.png"' in new_content
+    assert "![[chart.svg|Alt text for chart.svg]]" in new_content
+
+
+def test_scan_then_apply_no_regressions(temp_dir: Path) -> None:
+    """After applying, rescanning should find no issues."""
+    md_path = temp_dir / "article.md"
+    md_path.write_text(
+        "![](photo.jpg)\n\n<img src='diagram.png'>\n",
+        encoding="utf-8",
+    )
+
+    queue = scan.build_queue(temp_dir)
+    assert len(queue) == 2
+
+    captions_data = [
+        {
+            "markdown_file": str(md_path),
+            "asset_path": item.asset_path,
+            "line_number": item.line_number,
+            "suggested_alt": "s",
+            "final_alt": f"Good description of {item.asset_path}",
+            "model": "m",
+            "context_snippet": "c",
+        }
+        for item in queue
+    ]
+    captions_path = temp_dir / "captions.json"
+    captions_path.write_text(json.dumps(captions_data))
+    console = Console(file=StringIO())
+    apply.apply_captions(captions_path, console)
+
+    queue_after = scan.build_queue(temp_dir)
+    assert len(queue_after) == 0
+
+
+def test_large_mixed_file_scan_and_apply(temp_dir: Path) -> None:
+    """Large file with mixed formats: scan, mock-caption, apply, verify."""
+    lines = ["# Large Document\n"]
+    for i in range(30):
+        lines.append(f"\nParagraph {i} with some text.\n")
+        if i % 3 == 0:
+            lines.append(f"\n![](markdown_{i}.png)\n")
+        elif i % 3 == 1:
+            lines.append(f'\n<img src="html_{i}.jpg">\n')
+        else:
+            lines.append(f"\n![[wiki_{i}.gif]]\n")
+
+    md_path = temp_dir / "large.md"
+    md_path.write_text("".join(lines), encoding="utf-8")
+
+    queue = scan.build_queue(temp_dir)
+    assert len(queue) == 30
+
+    captions = [
+        {
+            "markdown_file": str(md_path),
+            "asset_path": item.asset_path,
+            "line_number": item.line_number,
+            "suggested_alt": "s",
+            "final_alt": f"Description {item.asset_path}",
+            "model": "m",
+            "context_snippet": "c",
+        }
+        for item in queue
+    ]
+    cp = temp_dir / "captions.json"
+    cp.write_text(json.dumps(captions))
+    console = Console(file=StringIO())
+    applied = apply.apply_captions(cp, console)
+    assert applied == 30
+
+    queue_after = scan.build_queue(temp_dir)
+    assert len(queue_after) == 0

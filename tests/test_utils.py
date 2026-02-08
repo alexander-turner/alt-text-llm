@@ -1455,3 +1455,74 @@ def test_split_yaml_malformed_yaml(tmp_path: Path) -> None:
     metadata, content = utils.split_yaml(file_path, verbose=True)
     assert metadata == {}
     assert content == ""
+
+
+# ---------------------------------------------------------------------------
+# Edge cases and boundary conditions
+# ---------------------------------------------------------------------------
+
+
+def test_paragraph_context_all_blank_lines() -> None:
+    """All blank lines should return empty string."""
+    lines = ["", "", "", ""]
+    result = utils.paragraph_context(lines, 2)
+    assert result == ""
+
+
+def test_split_yaml_unicode_content(tmp_path: Path) -> None:
+    """YAML with unicode values."""
+    content = "---\ntitle: 日本語タイトル\n---\n本文\n"
+    fp = tmp_path / "unicode.md"
+    fp.write_text(content, encoding="utf-8")
+    metadata, body = utils.split_yaml(fp)
+    assert metadata.get("title") == "日本語タイトル"
+    assert "本文" in body
+
+
+def test_write_output_unicode(tmp_path: Path) -> None:
+    """write_output should handle Unicode in results."""
+    results = [
+        utils.AltGenerationResult(
+            markdown_file="日本語.md",
+            asset_path="画像.png",
+            suggested_alt="代替テキスト",
+            model="test",
+            context_snippet="コンテキスト",
+            final_alt="最終テキスト",
+        )
+    ]
+    output = tmp_path / "unicode_output.json"
+    utils.write_output(results, output)
+    data = json.loads(output.read_text(encoding="utf-8"))
+    assert data[0]["markdown_file"] == "日本語.md"
+    assert data[0]["suggested_alt"] == "代替テキスト"
+
+
+def test_build_prompt_for_video(tmp_path: Path) -> None:
+    """build_prompt should use video-specific language for video assets."""
+    md_path = tmp_path / "test.md"
+    md_path.write_text("Some content\n\nVideo here\n", encoding="utf-8")
+    qi = scan.QueueItem(
+        markdown_file=str(md_path),
+        asset_path="demo.mp4",
+        line_number=3,
+        context_snippet="ctx",
+    )
+    prompt = utils.build_prompt(qi, max_chars=200)
+    assert "video" in prompt.lower()
+    assert "Under 200 characters" in prompt
+
+
+def test_build_prompt_for_image(tmp_path: Path) -> None:
+    """build_prompt should use image-specific language for image assets."""
+    md_path = tmp_path / "test.md"
+    md_path.write_text("Some content\n\nImage here\n", encoding="utf-8")
+    qi = scan.QueueItem(
+        markdown_file=str(md_path),
+        asset_path="photo.jpg",
+        line_number=3,
+        context_snippet="ctx",
+    )
+    prompt = utils.build_prompt(qi, max_chars=300)
+    assert "alt text" in prompt.lower()
+    assert "Under 300 characters" in prompt
