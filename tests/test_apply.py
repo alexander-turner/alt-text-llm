@@ -1157,10 +1157,19 @@ def test_unicode_alt_text_html() -> None:
     assert new_line == '<img alt="中文替代文字" src="image.png"/>'
 
 
-def test_apply_preserves_trailing_newline(temp_dir: Path, console: Console) -> None:
-    """File with trailing newline should preserve it."""
+@pytest.mark.parametrize(
+    "source,expect_trailing_newline",
+    [
+        pytest.param("![old](image.png)\n", True, id="preserves_trailing_newline"),
+        pytest.param("![old](image.png)", False, id="preserves_no_trailing_newline"),
+    ],
+)
+def test_apply_preserves_trailing_newline(
+    temp_dir: Path, console: Console, source: str, expect_trailing_newline: bool
+) -> None:
+    """Apply should not alter whether the file ends with a newline."""
     md_path = temp_dir / "test.md"
-    md_path.write_text("![old](image.png)\n", encoding="utf-8")
+    md_path.write_text(source, encoding="utf-8")
     caption = utils.AltGenerationResult(
         markdown_file=str(md_path),
         asset_path="image.png",
@@ -1170,23 +1179,7 @@ def test_apply_preserves_trailing_newline(temp_dir: Path, console: Console) -> N
         final_alt="new",
     )
     apply._apply_caption_to_file(md_path, caption, console)
-    assert md_path.read_text().endswith("\n")
-
-
-def test_apply_preserves_no_trailing_newline(temp_dir: Path, console: Console) -> None:
-    """File without trailing newline should NOT gain one."""
-    md_path = temp_dir / "test.md"
-    md_path.write_text("![old](image.png)", encoding="utf-8")
-    caption = utils.AltGenerationResult(
-        markdown_file=str(md_path),
-        asset_path="image.png",
-        suggested_alt="s",
-        model="m",
-        context_snippet="c",
-        final_alt="new",
-    )
-    apply._apply_caption_to_file(md_path, caption, console)
-    assert not md_path.read_text().endswith("\n")
+    assert md_path.read_text().endswith("\n") == expect_trailing_newline
 
 
 def test_apply_to_nonexistent_file(temp_dir: Path) -> None:
@@ -1261,7 +1254,7 @@ def test_apply_with_many_captions(temp_dir: Path) -> None:
 
 
 def test_scan_then_apply_roundtrip(temp_dir: Path) -> None:
-    """Scan a file, create captions, apply them - full pipeline."""
+    """Scan a file, create captions, apply them, then rescan finds nothing."""
     md_path = temp_dir / "article.md"
     md_content = textwrap.dedent("""\
         # My Article
@@ -1308,37 +1301,8 @@ def test_scan_then_apply_roundtrip(temp_dir: Path) -> None:
     assert 'alt="Alt text for diagram.png"' in new_content
     assert "![[chart.svg|Alt text for chart.svg]]" in new_content
 
-
-def test_scan_then_apply_no_regressions(temp_dir: Path) -> None:
-    """After applying, rescanning should find no issues."""
-    md_path = temp_dir / "article.md"
-    md_path.write_text(
-        "![](photo.jpg)\n\n<img src='diagram.png'>\n",
-        encoding="utf-8",
-    )
-
-    queue = scan.build_queue(temp_dir)
-    assert len(queue) == 2
-
-    captions_data = [
-        {
-            "markdown_file": str(md_path),
-            "asset_path": item.asset_path,
-            "line_number": item.line_number,
-            "suggested_alt": "s",
-            "final_alt": f"Good description of {item.asset_path}",
-            "model": "m",
-            "context_snippet": "c",
-        }
-        for item in queue
-    ]
-    captions_path = temp_dir / "captions.json"
-    captions_path.write_text(json.dumps(captions_data))
-    console = Console(file=StringIO())
-    apply.apply_captions(captions_path, console)
-
-    queue_after = scan.build_queue(temp_dir)
-    assert len(queue_after) == 0
+    # Rescan: all images now have alt text, so queue should be empty
+    assert scan.build_queue(temp_dir) == []
 
 
 def test_large_mixed_file_scan_and_apply(temp_dir: Path) -> None:

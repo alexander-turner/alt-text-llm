@@ -1516,31 +1516,25 @@ def test_write_output_unicode(tmp_path: Path) -> None:
     assert data[0]["suggested_alt"] == "代替テキスト"
 
 
-def test_build_prompt_for_video(tmp_path: Path) -> None:
-    """build_prompt should use video-specific language for video assets."""
+@pytest.mark.parametrize(
+    "asset,max_chars,expected_keyword",
+    [
+        pytest.param("demo.mp4", 200, "video", id="video"),
+        pytest.param("photo.jpg", 300, "alt text", id="image"),
+    ],
+)
+def test_build_prompt_asset_type(
+    tmp_path: Path, asset: str, max_chars: int, expected_keyword: str
+) -> None:
+    """build_prompt uses asset-type-specific language and respects char limit."""
     md_path = tmp_path / "test.md"
-    md_path.write_text("Some content\n\nVideo here\n", encoding="utf-8")
+    md_path.write_text("Some content\n\nAsset here\n", encoding="utf-8")
     qi = scan.QueueItem(
         markdown_file=str(md_path),
-        asset_path="demo.mp4",
+        asset_path=asset,
         line_number=3,
         context_snippet="ctx",
     )
-    prompt = utils.build_prompt(qi, max_chars=200)
-    assert "video" in prompt.lower()
-    assert "Under 200 characters" in prompt
-
-
-def test_build_prompt_for_image(tmp_path: Path) -> None:
-    """build_prompt should use image-specific language for image assets."""
-    md_path = tmp_path / "test.md"
-    md_path.write_text("Some content\n\nImage here\n", encoding="utf-8")
-    qi = scan.QueueItem(
-        markdown_file=str(md_path),
-        asset_path="photo.jpg",
-        line_number=3,
-        context_snippet="ctx",
-    )
-    prompt = utils.build_prompt(qi, max_chars=300)
-    assert "alt text" in prompt.lower()
-    assert "Under 300 characters" in prompt
+    prompt = utils.build_prompt(qi, max_chars=max_chars)
+    assert expected_keyword in prompt.lower()
+    assert f"Under {max_chars} characters" in prompt
