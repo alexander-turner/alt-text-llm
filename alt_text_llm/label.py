@@ -165,6 +165,9 @@ def _process_single_suggestion_for_labeling(
     queue_item = scan.QueueItem(
         markdown_file=suggestion_data.markdown_file,
         asset_path=suggestion_data.asset_path,
+        # line_number is only used here for context display; default to 1
+        # (top of file) when missing so labeling can proceed even with
+        # hand-edited or legacy captions JSON that omits the field.
         line_number=suggestion_data.line_number or 1,
         context_snippet=suggestion_data.context_snippet,
     )
