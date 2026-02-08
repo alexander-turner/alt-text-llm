@@ -20,6 +20,15 @@ def create_test_image(
     No external executables are required.  The content is not a valid image,
     but every test that calls this helper mocks ``subprocess.run`` (or
     similar) before actually processing the file.
+
+    Args:
+        path: The file path where the image will be saved.
+        size: The size of the image in ImageMagick format (e.g., "100x100").
+            Accepted for API compatibility but not used.
+        colorspace: The colorspace to use (e.g., "sRGB"). Not used.
+        background: The background color/type (e.g., "none" for transparency). Not used.
+        draw: ImageMagick draw commands to execute. Not used.
+        metadata: Metadata to add to the image (e.g., "Artist=Test Artist"). Not used.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
