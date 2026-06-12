@@ -110,14 +110,12 @@ def _iter_media_tokens(tokens: Sequence[Token]) -> Iterable[Token]:
 
         if token.type == "inline":
             content_lower = token.content.lower()
-            # Yield inline tokens for wikilink images
-            if "![[" in content_lower:
-                yield token
-            # Also yield inline tokens containing <video> so the full
-            # HTML (e.g. <video><source src="..."></video>) is available.
-            # markdown-it splits inline HTML into fragments, so child
-            # html_inline tokens may not have the complete tag.
-            if "<video" in content_lower:
+            # Yield inline tokens for wikilink images.  Also yield inline
+            # tokens containing <video> so the full HTML (e.g.
+            # <video><source src="..."></video>) is available: markdown-it
+            # splits inline HTML into fragments, so child html_inline tokens
+            # may not have the complete tag.
+            if "![[" in content_lower or "<video" in content_lower:
                 yield token
 
         if token.children:
@@ -162,9 +160,8 @@ def _extract_html_video_info(token: Token) -> list[tuple[str, dict[str, str | No
 
         if src_raw:
             accessibility_attrs: dict[str, str | None] = {
-                "aria_label": video.get("aria-label") or None,
-                "title": video.get("title") or None,
-                "aria_describedby": video.get("aria-describedby") or None,
+                attr: str(value) if (value := video.get(attr)) else None
+                for attr in ("aria-label", "title", "aria-describedby")
             }
             infos.append((str(src_raw), accessibility_attrs))
 
@@ -206,7 +203,7 @@ def _handle_md_asset(
         missing or placeholder alt text.
     """
 
-    src_attr = token.attrGet("src") or None
+    src_attr = str(token.attrGet("src") or "")
     alt_text = token.content or None
     if not src_attr or _is_alt_meaningful(alt_text):
         return []
@@ -340,42 +337,28 @@ def _process_file(md_path: Path) -> list[QueueItem]:
     lines = source_text.splitlines()
 
     items: list[QueueItem] = []
-    tokens = md.parse(source_text)
-    # Track video asset paths already found via inline tokens to avoid
-    # double-counting when html_inline children are also yielded.
-    processed_video_assets: set[str] = set()
-
-    for token in _iter_media_tokens(tokens):
+    for token in _iter_media_tokens(md.parse(source_text)):
         if token.type == "image":
-            token_items = _handle_md_asset(token, md_path, lines)
-        elif token.type in {"html_inline", "html_block"}:
-            soup = BeautifulSoup(token.content, "html.parser")
+            items.extend(_handle_md_asset(token, md_path, lines))
+            continue
 
+        soup = BeautifulSoup(token.content, "html.parser")
+        if token.type in {"html_inline", "html_block"}:
             if soup.find("img"):
-                token_items = _handle_html_asset(token, md_path, lines)
+                items.extend(_handle_html_asset(token, md_path, lines))
             elif soup.find("video"):
-                token_items = _handle_html_video(token, md_path, lines)
-                # Filter out videos already found via parent inline token
-                token_items = [
-                    it for it in token_items
-                    if it.asset_path not in processed_video_assets
-                ]
-            else:
-                token_items = []
-        elif token.type == "inline":
-            token_items = []
-            soup = BeautifulSoup(token.content, "html.parser")
+                items.extend(_handle_html_video(token, md_path, lines))
+        else:  # inline: complete <video> HTML plus any wikilink images
             if soup.find("video"):
-                video_items = _handle_html_video(token, md_path, lines)
-                for video_item in video_items:
-                    processed_video_assets.add(video_item.asset_path)
-                token_items.extend(video_items)
-            # Always check for wikilinks in inline tokens
-            token_items.extend(_handle_wikilink_asset(token, md_path, lines))
-        else:
-            token_items = _handle_wikilink_asset(token, md_path, lines)
-        items.extend(token_items)
-    return items
+                items.extend(_handle_html_video(token, md_path, lines))
+            items.extend(_handle_wikilink_asset(token, md_path, lines))
+
+    # A video can surface twice—via an inline token and again via its
+    # html_inline children—so keep only the first item per asset.
+    unique_items: dict[str, QueueItem] = {}
+    for item in items:
+        unique_items.setdefault(item.asset_path, item)
+    return list(unique_items.values())
 
 
 def build_queue(root: Path) -> list[QueueItem]:

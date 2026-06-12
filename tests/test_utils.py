@@ -1288,11 +1288,13 @@ def test_get_git_root(
     """Test finding the git root directory (success and failure)."""
 
     def mock_subprocess_run(*args, **_kwargs) -> subprocess.CompletedProcess:
+        if returncode != 0:
+            raise subprocess.CalledProcessError(returncode, args)
         return subprocess.CompletedProcess(args=args, returncode=returncode, stdout=stdout)
 
     monkeypatch.setattr(utils.subprocess, "run", mock_subprocess_run)
     if should_raise:
-        with pytest.raises(RuntimeError):
+        with pytest.raises(subprocess.CalledProcessError):
             utils.get_git_root()
     else:
         assert utils.get_git_root() == Path(stdout)

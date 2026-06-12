@@ -56,7 +56,8 @@ Scan your markdown files to find images without meaningful alt text:
 alt-text-llm scan --root /path/to/markdown/files
 ```
 
-This creates `asset_queue.json` with all assets needing alt text.
+This creates `asset_queue.json` with all assets needing alt text. `--root`
+defaults to the current directory.
 
 ### 2. Generate AI suggestions
 
@@ -98,10 +99,11 @@ alt-text-llm label \
 
 **Interactive commands:**
 
-- Edit the suggested alt text (vim keybindings enabled)
+- Edit the suggested alt text (pass `--vi-mode` for vim keybindings)
 - Press Enter to accept the suggestion as-is
 - Submit `undo` or `u` to go back to the previous item
 - Images display in your terminal (requires `imgcat`)
+- Pass `--no-skip-existing` to relabel assets already present in the output file
 
 ### 4. Apply approved captions
 

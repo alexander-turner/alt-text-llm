@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 
-from alt_text_llm import scan, utils
+from alt_text_llm import generate, scan, utils
 
 UNDO_REQUESTED = "UNDO_REQUESTED"
 
@@ -128,9 +128,9 @@ class DisplayManager:
                 vi_mode=self.vi_mode,
                 multiline=False,
             )
-        except (EOFError, KeyboardInterrupt):
-            # Handle Ctrl+C or Ctrl+D gracefully
-            raise KeyboardInterrupt
+        except EOFError as err:
+            # Treat Ctrl+D like Ctrl+C so callers save progress
+            raise KeyboardInterrupt from err
 
         # Check for undo command
         if result.strip().lower() in ("undo", "u"):
@@ -189,33 +189,7 @@ def _process_single_suggestion_for_labeling(
         if sys.stdout.isatty():
             final_alt = display.prompt_for_edit(prefill_text, current, total)
 
-        return utils.AltGenerationResult(
-            markdown_file=suggestion_data.markdown_file,
-            asset_path=suggestion_data.asset_path,
-            suggested_alt=suggestion_data.suggested_alt,
-            final_alt=final_alt,
-            model=suggestion_data.model,
-            context_snippet=suggestion_data.context_snippet,
-            line_number=suggestion_data.line_number,
-        )
-
-
-def _filter_suggestions_by_existing(
-    suggestions: Sequence[utils.AltGenerationResult],
-    output_path: Path,
-    console: Console,
-) -> list[utils.AltGenerationResult]:
-    """Filter out suggestions that already have captions."""
-    existing_captions = utils.load_existing_captions(output_path)
-    filtered = [s for s in suggestions if s.asset_path not in existing_captions]
-
-    skipped_count = len(suggestions) - len(filtered)
-    if skipped_count > 0:
-        console.print(
-            f"[dim]Skipped {skipped_count} items with existing captions[/dim]"
-        )
-
-    return filtered
+        return replace(suggestion_data, final_alt=final_alt)
 
 
 def _handle_undo_request(
@@ -285,9 +259,9 @@ def label_suggestions(
     console.print(f"\n[bold blue]Labeling {len(suggestions)} suggestions[/bold blue]\n")
 
     suggestions_to_process = (
-        _filter_suggestions_by_existing(suggestions, output_path, console)
+        generate.filter_existing_captions(suggestions, [output_path], console)
         if append_mode
-        else suggestions
+        else list(suggestions)
     )
 
     session = LabelingSession(suggestions_to_process)
@@ -321,10 +295,11 @@ def label_from_suggestions_file(
     with open(suggestions_file, encoding="utf-8") as f:
         suggestions_from_file = json.load(f)
 
-    # Convert loaded data to AltGenerationResult, filtering out extra fields
-    suggestions: list[utils.AltGenerationResult] = []
-    for suggestion in suggestions_from_file:
-        suggestions.append(utils.AltGenerationResult(**suggestion))
+    # Convert loaded data to AltGenerationResult, ignoring unknown fields
+    suggestions = [
+        utils.AltGenerationResult.from_json(suggestion)
+        for suggestion in suggestions_from_file
+    ]
 
     console.print(
         f"[green]Loaded {len(suggestions)} suggestions from {suggestions_file}[/green]"

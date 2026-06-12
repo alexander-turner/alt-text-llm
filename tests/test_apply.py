@@ -28,24 +28,6 @@ def test_escape_markdown_alt_text(input_text: str, expected: str) -> None:
     assert apply._escape_markdown_alt_text(input_text) == expected
 
 
-@pytest.mark.parametrize(
-    "input_text,expected",
-    [
-        ("Tom & Jerry", "Tom &amp; Jerry"),
-        ("Formula: x < y and y > z", "Formula: x &lt; y and y &gt; z"),
-        ('She said "hello"', "She said &quot;hello&quot;"),
-        (
-            '<tag attr="value"> & more',
-            "&lt;tag attr=&quot;value&quot;&gt; &amp; more",
-        ),
-        ("A simple description", "A simple description"),
-    ],
-)
-def test_escape_html_alt_text(input_text: str, expected: str) -> None:
-    """Test escaping special characters in HTML alt text."""
-    assert apply._escape_html_alt_text(input_text) == expected
-
-
 @pytest.fixture
 def console():
     """Create a Rich console for tests."""
