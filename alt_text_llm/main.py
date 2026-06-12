@@ -24,9 +24,7 @@ class Command(StrEnum):
 
 def _scan_command(args: argparse.Namespace) -> None:
     """Execute the scan sub-command."""
-    output_path = (
-        args.output or utils.get_git_root() / "scripts" / "asset_queue.json"
-    )
+    output_path = args.output
     queue_items = scan.build_queue(args.root)
 
     output_path.write_text(
@@ -42,10 +40,6 @@ def _scan_command(args: argparse.Namespace) -> None:
 
 def _generate_command(args: argparse.Namespace) -> None:
     """Execute the generate sub-command."""
-    if not args.model:
-        print("Error: --model is required for the generate command")
-        exit(1)
-
     opts = generate.GenerateAltTextOptions(
         root=args.root,
         model=args.model,
@@ -100,8 +94,6 @@ def _generate_command(args: argparse.Namespace) -> None:
 
 def _parse_args() -> argparse.Namespace:
     """Parse command-line arguments for all alt text workflows."""
-    git_root = utils.get_git_root()
-
     parser = argparse.ArgumentParser(
         description="Alt text generation and labeling workflows"
     )
@@ -119,13 +111,14 @@ def _parse_args() -> argparse.Namespace:
     scan_parser.add_argument(
         "--root",
         type=Path,
-        default=git_root / "website_content",
-        help="Directory to search (default: website_content)",
+        default=Path.cwd(),
+        help="Directory to search (default: current directory)",
     )
     scan_parser.add_argument(
         "--output",
         type=Path,
-        help="Path for output JSON file (default: <git_root>/scripts/asset_queue.json)",
+        default=Path("asset_queue.json"),
+        help="Path for output JSON file",
     )
 
     # ---------------------------------------------------------------------------
@@ -137,8 +130,8 @@ def _parse_args() -> argparse.Namespace:
     generate_parser.add_argument(
         "--root",
         type=Path,
-        default=git_root / "website_content",
-        help="Markdown root directory",
+        default=Path.cwd(),
+        help="Markdown root directory (default: current directory)",
     )
     generate_parser.add_argument(
         "--model", required=True, help="LLM model to use for generation"
@@ -155,13 +148,13 @@ def _parse_args() -> argparse.Namespace:
     generate_parser.add_argument(
         "--captions",
         type=Path,
-        default=git_root / "scripts" / "asset_captions.json",
+        default=Path("asset_captions.json"),
         help="Existing/final captions JSON path (used to skip existing unless --process-existing)",
     )
     generate_parser.add_argument(
         "--suggestions-file",
         type=Path,
-        default=git_root / "scripts" / "suggested_alts.json",
+        default=Path("suggested_alts.json"),
         help="Path to read/write suggestions JSON",
     )
     generate_parser.add_argument(
@@ -186,18 +179,18 @@ def _parse_args() -> argparse.Namespace:
     label_parser.add_argument(
         "--suggestions-file",
         type=Path,
-        default=git_root / "scripts" / "suggested_alts.json",
+        default=Path("suggested_alts.json"),
         help="Path to read suggestions JSON",
     )
     label_parser.add_argument(
         "--output",
         type=Path,
-        default=git_root / "scripts" / "asset_captions.json",
+        default=Path("asset_captions.json"),
         help="Final captions JSON path",
     )
     label_parser.add_argument(
         "--skip-existing",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=True,
         help="Skip captions already present in output file",
     )
@@ -217,7 +210,7 @@ def _parse_args() -> argparse.Namespace:
     apply_parser.add_argument(
         "--captions-file",
         type=Path,
-        default=git_root / "scripts" / "asset_captions.json",
+        default=Path("asset_captions.json"),
         help="Path to the captions JSON file with final_alt populated",
     )
     apply_parser.add_argument(

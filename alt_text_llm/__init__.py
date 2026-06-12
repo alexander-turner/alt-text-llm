@@ -1,6 +1,6 @@
 """AI-powered alt text generation and labeling tools."""
 
-__version__ = "0.1.0"
+__version__ = "1.4.0"
 
 from . import apply, generate, label, main, scan, utils
 

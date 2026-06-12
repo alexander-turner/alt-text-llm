@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alt-text-llm"
-version = "1.3.1"
+dynamic = ["version"]
 description = "AI-powered accessibility text generation and labeling tools for markdown content"
 readme = "README.md"
 authors = [{name = "TurnTrout"}]
@@ -18,21 +18,24 @@ dependencies = [
     "ruamel.yaml",
     "markdown-it-py",
     "rich",
-    "tqdm",
     "prompt_toolkit",
     "beautifulsoup4",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "mypy", "types-requests", "pytest-asyncio"]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "pytest-xdist",
+    "mypy",
+    "types-requests",
+]
 
 [tool.pytest.ini_options]
 addopts = "--cov=alt_text_llm --cov-report=html -n auto"
 testpaths = ["tests"]
 asyncio_default_fixture_loop_scope = "function"
-filterwarnings = [
-    "ignore:rich is experimental/alpha:tqdm.std.TqdmExperimentalWarning",
-]
 
 [project.scripts]
 alt-text-llm = "alt_text_llm.main:main"
@@ -44,3 +47,6 @@ Repository = "https://github.com/alexander-turner/alt-text-llm"
 # Prevent setuptools from trying to auto-package unrelated top-level directories
 # like ./plans/.
 packages = ["alt_text_llm"]
+
+[tool.setuptools.dynamic]
+version = {attr = "alt_text_llm.__version__"}

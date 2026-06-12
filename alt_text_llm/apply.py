@@ -29,24 +29,6 @@ def _escape_markdown_alt_text(alt_text: str) -> str:
     return alt_text
 
 
-def _escape_html_alt_text(alt_text: str) -> str:
-    """
-    Escape special characters in alt text for HTML.
-
-    Args:
-        alt_text: The alt text to escape
-
-    Returns:
-        Escaped alt text safe for HTML attributes
-    """
-    # Escape HTML special characters
-    alt_text = alt_text.replace("&", "&amp;")
-    alt_text = alt_text.replace("<", "&lt;")
-    alt_text = alt_text.replace(">", "&gt;")
-    alt_text = alt_text.replace('"', "&quot;")
-    return alt_text
-
-
 def _apply_markdown_image_alt(
     line: str, asset_path: str, new_alt: str
 ) -> tuple[str, str | None]:
@@ -207,31 +189,19 @@ def _display_unused_entries(
         console.print(f"[dim]  {markdown_file}: {asset_basename}[/dim]")
 
 
-def _read_file_lines(md_path: Path) -> tuple[str, list[str]]:
-    """
-    Read a file and split it into lines.
-
-    Args:
-        md_path: Path to the markdown file
-
-    Returns:
-        Tuple of (original text, list of lines)
-    """
-    source_text = md_path.read_text(encoding="utf-8")
-    lines = source_text.splitlines()
-    return source_text, lines
+_FORMAT_APPLIERS = (
+    _apply_markdown_image_alt,
+    _apply_wikilink_image_alt,
+    _apply_html_image_alt,
+    _apply_html_video_label,
+)
 
 
 def _try_all_image_formats(
     line: str, asset_path: str, new_alt: str
 ) -> tuple[str, str | None]:
     """
-    Try applying alt text to all supported image formats.
-
-    Args:
-        line: The line to modify
-        asset_path: The asset path to match
-        new_alt: The new alt text to apply
+    Try each supported format until one matches.
 
     Returns:
         Tuple of (modified line, old alt text or None)
@@ -240,48 +210,12 @@ def _try_all_image_formats(
     # Use + to collapse multiple consecutive line breaks into one ellipsis
     normalized_alt = re.sub(r"(\r\n|\r|\n)+", " ... ", new_alt)
 
-    # Try markdown image first
-    modified_line, old_alt = _apply_markdown_image_alt(line, asset_path, normalized_alt)
+    for apply_format in _FORMAT_APPLIERS:
+        modified_line, old_alt = apply_format(line, asset_path, normalized_alt)
+        if modified_line != line:
+            return modified_line, old_alt
 
-    # If no change, try wikilink image
-    if modified_line == line:
-        modified_line, old_alt = _apply_wikilink_image_alt(
-            line, asset_path, normalized_alt
-        )
-
-    # If no change, try HTML image
-    if modified_line == line:
-        modified_line, old_alt = _apply_html_image_alt(line, asset_path, normalized_alt)
-
-    # If no change, try HTML video
-    if modified_line == line:
-        modified_line, old_alt = _apply_html_video_label(
-            line, asset_path, normalized_alt
-        )
-
-    return modified_line, old_alt
-
-
-def _write_modified_lines(
-    md_path: Path, lines: list[str], original_text: str, dry_run: bool
-) -> None:
-    """
-    Write modified lines back to file.
-
-    Args:
-        md_path: Path to the markdown file
-        lines: Modified lines to write
-        original_text: Original file text (to preserve trailing newline)
-        dry_run: If True, don't actually write to file
-    """
-    if dry_run:
-        return
-
-    new_content = "\n".join(lines)
-    # Preserve trailing newline if original had one
-    if original_text.endswith("\n"):
-        new_content += "\n"
-    md_path.write_text(new_content, encoding="utf-8")
+    return line, None
 
 
 def _apply_caption_to_file(
@@ -304,7 +238,8 @@ def _apply_caption_to_file(
     """
     assert caption_item.final_alt is not None, "final_alt must be set"
 
-    source_text, lines = _read_file_lines(md_path)
+    source_text = md_path.read_text(encoding="utf-8")
+    lines = source_text.splitlines()
 
     modified_count = 0
     last_old_alt: str | None = None
@@ -326,7 +261,13 @@ def _apply_caption_to_file(
         )
         return None
 
-    _write_modified_lines(md_path, lines, source_text, dry_run)
+    if not dry_run:
+        new_content = "\n".join(lines)
+        # Preserve trailing newline if original had one
+        if source_text.endswith("\n"):
+            new_content += "\n"
+        md_path.write_text(new_content, encoding="utf-8")
+
     return (last_old_alt, caption_item.final_alt)
 
 
@@ -349,18 +290,8 @@ def _load_and_parse_captions(
     unused_entries: set[tuple[str, str]] = set()
 
     for item in captions_data:
-        if item.get("final_alt") and item.get("final_alt").strip():
-            captions_to_apply.append(
-                utils.AltGenerationResult(
-                    markdown_file=item["markdown_file"],
-                    asset_path=item["asset_path"],
-                    suggested_alt=item["suggested_alt"],
-                    model=item["model"],
-                    context_snippet=item["context_snippet"],
-                    line_number=int(item["line_number"]),
-                    final_alt=item["final_alt"],
-                )
-            )
+        if (item.get("final_alt") or "").strip():
+            captions_to_apply.append(utils.AltGenerationResult.from_json(item))
         else:
             unused_entries.add(
                 (

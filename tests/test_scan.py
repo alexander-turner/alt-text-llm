@@ -3,11 +3,6 @@ from pathlib import Path
 
 import pytest
 from markdown_it.token import Token
-import tempfile
-from pathlib import Path
-
-from alt_text_llm.scan import build_queue, _is_video_label_meaningful
-
 
 from alt_text_llm import scan
 

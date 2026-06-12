@@ -4,7 +4,7 @@ import json
 import shutil
 import subprocess
 import textwrap
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -63,7 +63,7 @@ def get_git_root(starting_dir: Optional[Path] = None) -> Path:
         Path: Absolute path to the Git repository root.
 
     Raises:
-        RuntimeError: If Git root cannot be determined.
+        subprocess.CalledProcessError: If not inside a Git repository.
     """
     git_executable = find_executable("git")
     completed_process = subprocess.run(
@@ -73,9 +73,7 @@ def get_git_root(starting_dir: Optional[Path] = None) -> Path:
         check=True,
         cwd=starting_dir if starting_dir else Path.cwd(),
     )
-    if completed_process.returncode == 0:
-        return Path(completed_process.stdout.strip())
-    raise RuntimeError("Failed to get Git root")
+    return Path(completed_process.stdout.strip())
 
 
 def get_files(
@@ -296,6 +294,15 @@ class AltGenerationResult:
         """Convert to JSON-serializable dict."""
         return asdict(self)
 
+    @classmethod
+    def from_json(cls, data: dict[str, object]) -> "AltGenerationResult":
+        """Build from a JSON dict, ignoring unknown fields."""
+        field_names = {field.name for field in fields(cls)}
+        known = {key: value for key, value in data.items() if key in field_names}
+        if (line_number := known.get("line_number")) is not None:
+            known["line_number"] = int(line_number)  # type: ignore[call-overload]
+        return cls(**known)  # type: ignore[arg-type]
+
 
 class AltGenerationError(Exception):
     """Raised when caption generation fails."""
@@ -392,11 +399,15 @@ def download_asset(queue_item: "scan.QueueItem", workspace: Path) -> Path:
     if candidate.exists():
         return _convert_asset_for_llm(candidate.resolve(), workspace)
 
-    # Try relative to git root
-    git_root = get_git_root()
-    alternative = git_root / asset_path.lstrip("/")
-    if alternative.exists():
-        return _convert_asset_for_llm(alternative.resolve(), workspace)
+    # Try relative to git root, if inside a git repository
+    try:
+        git_root = get_git_root()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        git_root = None
+    if git_root is not None:
+        alternative = git_root / asset_path.lstrip("/")
+        if alternative.exists():
+            return _convert_asset_for_llm(alternative.resolve(), workspace)
 
     raise FileNotFoundError(
         f"Unable to locate asset '{asset_path}' referenced in {queue_item.markdown_file}"
@@ -449,79 +460,96 @@ def is_video_asset(asset_path: str) -> bool:
     return Path(asset_path).suffix.lower() in VIDEO_EXTENSIONS
 
 
+@dataclass(frozen=True, slots=True)
+class _PromptParts:
+    """Media-type-specific pieces of the caption generation prompt."""
+
+    intro: str
+    requirements: str
+    closing: str
+
+
+_VIDEO_PROMPT = _PromptParts(
+    intro=(
+        "Generate a concise accessibility description for this video.\n"
+        "Describe what happens in the video and what information it conveys clearly and accurately."
+    ),
+    requirements=textwrap.dedent(
+        """
+        - Do not include redundant phrases (e.g. "video of", "video showing", "a video demonstrating")
+        - Return only the description, no quotes
+        - Describe the key actions, events, or information shown in the video
+        - For instructional videos: focus on what is being taught or demonstrated
+        - For demonstration videos: describe what is being shown and the outcome
+        - Don't use line breaks in the description
+        - Focus on the informational content rather than purely visual details
+        """
+    ).strip(),
+    closing=textwrap.dedent(
+        """
+        Prioritize completeness over brevity - describe both the content and purpose of the video.
+        While thinking quietly, propose a candidate description. Then critique it—
+        does it accurately convey what the video demonstrates or explains?
+        Incorporate the critique to improve it. Only output the improved description.
+        """
+    ).strip(),
+)
+
+_IMAGE_PROMPT = _PromptParts(
+    intro=(
+        "Generate concise alt text for accessibility and SEO.\n"
+        "Describe the intended information of the image clearly and accurately."
+    ),
+    requirements=textwrap.dedent(
+        """
+        - Do not include redundant information (e.g. "image of", "picture of", "diagram illustrating", "a diagram of")
+        - Return only the alt text, no quotes
+        - For text-heavy images: transcribe key text content, then describe visual elements
+        - Don't reintroduce acronyms
+        - Don't use line breaks in the alt text
+        - Don't describe purely visual elements unless directly relevant for
+        understanding the content (e.g. don't say "the line in this scientific chart is green")
+        - Describe spatial relationships and visual hierarchy when important
+        """
+    ).strip(),
+    closing=textwrap.dedent(
+        """
+        Prioritize completeness over brevity - include both textual content and visual description as needed.
+        While thinking quietly, propose a candidate alt text. Then critique the candidate alt text—
+        does it accurately describe the information the image is meant to convey?
+        Incorporate the critique into the alt text to improve it. Only output the improved alt text.
+        """
+    ).strip(),
+)
+
+
 def build_prompt(
     queue_item: "scan.QueueItem",
     max_chars: int,
 ) -> str:
     """Build prompt for LLM caption generation (images or videos)."""
-    is_video = is_video_asset(queue_item.asset_path)
-    
-    if is_video:
-        base_prompt = textwrap.dedent(
-            """
-            Generate a concise accessibility description for this video.
-            Describe what happens in the video and what information it conveys clearly and accurately.
-            """
-        ).strip()
-    else:
-        base_prompt = textwrap.dedent(
-            """
-            Generate concise alt text for accessibility and SEO.
-            Describe the intended information of the image clearly and accurately.
-            """
-        ).strip()
-
+    parts = (
+        _VIDEO_PROMPT
+        if is_video_asset(queue_item.asset_path)
+        else _IMAGE_PROMPT
+    )
     article_context = generate_article_context(
         queue_item, trim_frontmatter=False
     )
-    
-    if is_video:
-        main_prompt = textwrap.dedent(
-            f"""
-            Context from {queue_item.markdown_file}:
-            {article_context}
 
-            Critical requirements:
-            - Under {max_chars} characters (aim for 1-2 sentences when possible)
-            - Do not include redundant phrases (e.g. "video of", "video showing", "a video demonstrating")
-            - Return only the description, no quotes
-            - Describe the key actions, events, or information shown in the video
-            - For instructional videos: focus on what is being taught or demonstrated
-            - For demonstration videos: describe what is being shown and the outcome
-            - Don't use line breaks in the description
-            - Focus on the informational content rather than purely visual details
-
-            Prioritize completeness over brevity - describe both the content and purpose of the video.
-            While thinking quietly, propose a candidate description. Then critique it—
-            does it accurately convey what the video demonstrates or explains?
-            Incorporate the critique to improve it. Only output the improved description.
-            """
-        ).strip()
-    else:
-        main_prompt = textwrap.dedent(
-            f"""
-            Context from {queue_item.markdown_file}:
-            {article_context}
-
-            Critical requirements:
-            - Under {max_chars} characters (aim for 1-2 sentences when possible)
-            - Do not include redundant information (e.g. "image of", "picture of", "diagram illustrating", "a diagram of")
-            - Return only the alt text, no quotes
-            - For text-heavy images: transcribe key text content, then describe visual elements
-            - Don't reintroduce acronyms
-            - Don't use line breaks in the alt text
-            - Don't describe purely visual elements unless directly relevant for
-            understanding the content (e.g. don't say "the line in this scientific chart is green")
-            - Describe spatial relationships and visual hierarchy when important
-
-            Prioritize completeness over brevity - include both textual content and visual description as needed.
-            While thinking quietly, propose a candidate alt text. Then critique the candidate alt text—
-            does it accurately describe the information the image is meant to convey?
-            Incorporate the critique into the alt text to improve it. Only output the improved alt text.
-            """
-        ).strip()
-
-    return f"{base_prompt}\n{main_prompt}"
+    return "\n".join(
+        [
+            parts.intro,
+            f"Context from {queue_item.markdown_file}:",
+            article_context,
+            "",
+            "Critical requirements:",
+            f"- Under {max_chars} characters (aim for 1-2 sentences when possible)",
+            parts.requirements,
+            "",
+            parts.closing,
+        ]
+    )
 
 
 def load_existing_captions(captions_path: Path) -> set[str]:

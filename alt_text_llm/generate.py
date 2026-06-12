@@ -4,18 +4,14 @@ import asyncio
 import shutil
 import subprocess
 import tempfile
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Sequence, TypeVar
 
 from rich.console import Console
-from tqdm.rich import tqdm
-from tqdm.std import TqdmExperimentalWarning
+from rich.progress import Progress
 
 from alt_text_llm import scan, utils
-
-warnings.filterwarnings("ignore", category=TqdmExperimentalWarning)
 
 # Approximate cost estimates per 1000 tokens (as of Sep 2025)
 MODEL_COSTS = {
@@ -91,12 +87,17 @@ def estimate_cost(
     return f"Estimated cost: ${total_cost:.3f} (${input_cost:.3f} input + ${output_cost:.3f} output)"
 
 
+_HasAssetPath = TypeVar(
+    "_HasAssetPath", "scan.QueueItem", utils.AltGenerationResult
+)
+
+
 def filter_existing_captions(
-    queue_items: Sequence["scan.QueueItem"],
+    queue_items: Sequence[_HasAssetPath],
     output_paths: Sequence[Path],
     console: Console,
     verbose: bool = True,
-) -> list["scan.QueueItem"]:
+) -> list[_HasAssetPath]:
     """Filter out items that already have captions in the output paths."""
     existing_captions = set()
     for output_path in output_paths:
@@ -158,41 +159,33 @@ async def async_generate_suggestions(
     options: GenerateAltTextOptions,
 ) -> list[utils.AltGenerationResult]:
     """Generate suggestions concurrently for *queue_items*."""
-    sem = asyncio.Semaphore(_CONCURRENCY_LIMIT)
-    tasks: list[asyncio.Task[utils.AltGenerationResult]] = []
-
-    for qi in queue_items:
-        tasks.append(
-            asyncio.create_task(
-                _run_llm_async(
-                    qi,
-                    options,
-                    sem,
-                )
-            )
-        )
-
-    task_count = len(tasks)
-    if task_count == 0:
+    if not queue_items:
         return []
 
+    sem = asyncio.Semaphore(_CONCURRENCY_LIMIT)
+    tasks = [
+        asyncio.create_task(_run_llm_async(qi, options, sem))
+        for qi in queue_items
+    ]
+
     suggestions: list[utils.AltGenerationResult] = []
-    with tqdm(total=task_count, desc="Generating alt text") as progress_bar:
+    with Progress() as progress:
+        task_id = progress.add_task("Generating alt text", total=len(tasks))
         try:
             for finished in asyncio.as_completed(tasks):
                 try:
-                    result = await finished
-                    suggestions.append(result)
+                    suggestions.append(await finished)
                 except (
                     utils.AltGenerationError,
                     FileNotFoundError,
                 ) as err:
                     # Skip individual items that fail (e.g., unsupported file types)
-                    progress_bar.write(f"Skipped item due to error: {err}")
-                progress_bar.update(1)
+                    progress.console.print(f"Skipped item due to error: {err}")
+                progress.advance(task_id)
         except asyncio.CancelledError:
-            progress_bar.set_description(
-                "Generating alt text (cancelled, finishing up...)"
+            progress.update(
+                task_id,
+                description="Generating alt text (cancelled, finishing up...)",
             )
 
     return suggestions
