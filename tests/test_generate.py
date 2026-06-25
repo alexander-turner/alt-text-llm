@@ -360,7 +360,6 @@ async def test_async_generate_bounds_concurrent_temp_dirs(
 
     live = 0
     peak = 0
-    lock = asyncio.Lock()
     real_mkdtemp = tempfile.mkdtemp
 
     def counting_mkdtemp(*args, **kwargs):
