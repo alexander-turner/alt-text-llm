@@ -1,7 +1,6 @@
 """Tests for main.py CLI dispatch, argument handling, and UX guards."""
 
 import json
-from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
