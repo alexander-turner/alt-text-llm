@@ -19,6 +19,12 @@ from rich.panel import Panel
 from alt_text_llm import generate, scan, utils
 
 UNDO_REQUESTED = "UNDO_REQUESTED"
+QUIT_REQUESTED = "QUIT_REQUESTED"
+SKIP_REQUESTED = "SKIP_REQUESTED"
+
+
+class LabelingQuit(Exception):
+    """Raised internally to cleanly stop the labeling loop and save progress."""
 
 
 class LabelingSession:
@@ -102,7 +108,8 @@ class DisplayManager:
 
     def show_progress(self, current: int, total: int) -> None:
         """Display progress information."""
-        progress_text = f"Progress: {current}/{total} ({(current-1)/total*100:.1f}%)"
+        percent = (current / total * 100) if total else 0.0
+        progress_text = f"Progress: {current}/{total} ({percent:.1f}%)"
         self.console.print(f"[dim]{progress_text}[/dim]")
 
     def prompt_for_edit(
@@ -117,26 +124,49 @@ class DisplayManager:
             self.show_progress(current, total)
 
         self.console.print(
-            "\n[bold blue]Edit alt text (or press Enter to accept, 'undo' to go back). Exiting will save your progress.[/bold blue]"
+            "\n[bold blue]Edit alt text, or press Enter to accept. "
+            "Commands: 'undo'/'u' go back, 'skip'/'s' skip, 'quit'/'q' save & exit, "
+            "'help'/'?' for help. Exiting will save your progress.[/bold blue]"
         )
 
-        # Use prompt_toolkit for reliable prefilling across all shells
-        try:
-            result = prompt(
-                "> ",
-                default=suggestion,
-                vi_mode=self.vi_mode,
-                multiline=False,
-            )
-        except EOFError as err:
-            # Treat Ctrl+D like Ctrl+C so callers save progress
-            raise KeyboardInterrupt from err
+        while True:
+            # Use prompt_toolkit for reliable prefilling across all shells
+            try:
+                result = prompt(
+                    "> ",
+                    default=suggestion,
+                    vi_mode=self.vi_mode,
+                    multiline=False,
+                )
+            except EOFError as err:
+                # Treat Ctrl+D like Ctrl+C so callers save progress
+                raise KeyboardInterrupt from err
 
-        # Check for undo command
-        if result.strip().lower() in ("undo", "u"):
-            return UNDO_REQUESTED
+            command = result.strip().lower()
 
-        return result if result.strip() else suggestion
+            # Check for undo command
+            if command in ("undo", "u"):
+                return UNDO_REQUESTED
+            if command in ("quit", "q"):
+                return QUIT_REQUESTED
+            if command in ("skip", "s"):
+                return SKIP_REQUESTED
+            if command in ("help", "?"):
+                self._show_command_help()
+                continue
+
+            return result if result.strip() else suggestion
+
+    def _show_command_help(self) -> None:
+        """Print available editing commands."""
+        self.console.print(
+            "[bold]Commands:[/bold]\n"
+            "  Enter        accept the prefilled/edited text\n"
+            "  undo, u      undo the previous item and re-label it\n"
+            "  skip, s      skip this item without recording it\n"
+            "  quit, q      save progress and exit\n"
+            "  help, ?      show this help"
+        )
 
     def show_rule(self, title: str) -> None:
         """Display a separator rule."""
@@ -177,7 +207,14 @@ def _process_single_suggestion_for_labeling(
         # Display results
         display.show_rule(queue_item.asset_path)
         display.show_context(queue_item)
-        display.show_image(attachment)
+        # Image display can fail (tmux, missing imgcat, etc.); never let that
+        # crash the labeling session - the user can still edit alt text.
+        try:
+            display.show_image(attachment)
+        except Exception as err:  # noqa: BLE001 - display is best-effort
+            display.console.print(
+                f"[yellow]Could not display image: {err}; continuing[/yellow]"
+            )
 
         # Allow user to edit the suggestion
         prefill_text = (
@@ -236,6 +273,13 @@ def _process_labeling_loop(
 
             if result.final_alt == UNDO_REQUESTED:
                 _handle_undo_request(session, console)
+            elif result.final_alt == QUIT_REQUESTED:
+                raise LabelingQuit
+            elif result.final_alt == SKIP_REQUESTED:
+                console.print(
+                    f"[yellow]Skipping: {current_suggestion.asset_path}[/yellow]"
+                )
+                session.skip_current()
             else:
                 session.add_result(result)
 
@@ -252,15 +296,27 @@ def label_suggestions(
     suggestions: Sequence[utils.AltGenerationResult],
     console: Console,
     output_path: Path,
-    append_mode: bool,
+    skip_existing: bool,
     vi_mode: bool = False,
 ) -> int:
-    """Load suggestions and allow user to label them, collecting results."""
+    """Load suggestions and allow user to label them, collecting results.
+
+    ``skip_existing`` controls whether suggestions already present in
+    ``output_path`` are filtered out before labeling. It is intentionally
+    decoupled from how results are written: results are ALWAYS appended to the
+    output file so previously-labeled captions are never overwritten, even when
+    ``skip_existing`` is False (a re-label session).
+    """
     console.print(f"\n[bold blue]Labeling {len(suggestions)} suggestions[/bold blue]\n")
+
+    if not sys.stdout.isatty():
+        console.print(
+            "[yellow]Non-interactive terminal: accepting suggestions as-is[/yellow]"
+        )
 
     suggestions_to_process = (
         generate.filter_existing_captions(suggestions, [output_path], console)
-        if append_mode
+        if skip_existing
         else list(suggestions)
     )
 
@@ -269,12 +325,13 @@ def label_suggestions(
 
     try:
         _process_labeling_loop(session, display, console)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, LabelingQuit):
         console.print("\n[yellow]Saving progress...[/yellow]")
     finally:
         if session.processed_results:
+            # Always append so prior labels are never lost.
             utils.write_output(
-                session.processed_results, output_path, append_mode=append_mode
+                session.processed_results, output_path, append_mode=True
             )
             console.print(
                 f"[green]Saved {len(session.processed_results)} results to {output_path}[/green]"
@@ -292,8 +349,20 @@ def label_from_suggestions_file(
     """Load suggestions from file and start labeling process."""
     console = Console()
 
-    with open(suggestions_file, encoding="utf-8") as f:
-        suggestions_from_file = json.load(f)
+    if not suggestions_file.exists():
+        console.print(
+            f"[red]Error: Suggestions file not found: {suggestions_file}[/red]"
+        )
+        raise SystemExit(1)
+
+    try:
+        with open(suggestions_file, encoding="utf-8") as f:
+            suggestions_from_file = json.load(f)
+    except json.JSONDecodeError as err:
+        console.print(
+            f"[red]Error: Invalid JSON in {suggestions_file}: {err}[/red]"
+        )
+        raise SystemExit(1) from err
 
     # Convert loaded data to AltGenerationResult, ignoring unknown fields
     suggestions = [
@@ -306,7 +375,7 @@ def label_from_suggestions_file(
     )
 
     processed_count = label_suggestions(
-        suggestions, console, output_path, skip_existing, vi_mode
+        suggestions, console, output_path, skip_existing=skip_existing, vi_mode=vi_mode
     )
 
     # Write final results

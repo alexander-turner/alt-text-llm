@@ -9,18 +9,30 @@ description = "AI-powered accessibility text generation and labeling tools for m
 readme = "README.md"
 authors = [{name = "TurnTrout"}]
 license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 keywords = ["alt-text", "accessibility", "markdown", "llm", "ai"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Text Processing :: Markup :: Markdown",
+    "Topic :: Adaptive Technologies",
+]
 
 dependencies = [
-    "gitpython",
-    "requests",
-    "ruamel.yaml",
-    "markdown-it-py",
-    "rich",
-    "prompt_toolkit",
-    "beautifulsoup4",
-    "argcomplete",
+    "gitpython>=3.1",
+    "requests>=2.28",
+    "ruamel.yaml>=0.17",
+    "markdown-it-py>=2",
+    "rich>=13",
+    "prompt_toolkit>=3",
+    "beautifulsoup4>=4.11",
+    "argcomplete>=3",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +43,7 @@ dev = [
     "pytest-xdist",
     "mypy",
     "types-requests",
+    "ruff",
 ]
 
 [tool.pytest.ini_options]
@@ -42,12 +55,19 @@ asyncio_default_fixture_loop_scope = "function"
 alt-text-llm = "alt_text_llm.main:main"
 
 [project.urls]
+Homepage = "https://github.com/alexander-turner/alt-text-llm"
 Repository = "https://github.com/alexander-turner/alt-text-llm"
+Issues = "https://github.com/alexander-turner/alt-text-llm/issues"
+Documentation = "https://github.com/alexander-turner/alt-text-llm#readme"
 
 [tool.setuptools]
 # Prevent setuptools from trying to auto-package unrelated top-level directories
 # like ./plans/.
 packages = ["alt_text_llm"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+alt_text_llm = ["py.typed"]
 
 [tool.setuptools.dynamic]
 version = {attr = "alt_text_llm.__version__"}

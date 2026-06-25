@@ -2,7 +2,7 @@
 
 import json
 import subprocess
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -219,11 +219,11 @@ def test_label_suggestions_error_handling(
         if should_raise:
             with pytest.raises(error_type):
                 label.label_suggestions(
-                    test_suggestions, Mock(), output_file, append_mode=False
+                    test_suggestions, Mock(), output_file, skip_existing=False
                 )
         else:
             result_count = label.label_suggestions(
-                test_suggestions, Mock(), output_file, append_mode=False
+                test_suggestions, Mock(), output_file, skip_existing=False
             )
             if expected_result_count is not None:
                 assert result_count == expected_result_count
@@ -299,12 +299,14 @@ def test_label_from_suggestions_file_without_final_alt_field(
 @pytest.mark.parametrize(
     "error,file_content",
     [
-        (json.JSONDecodeError, "invalid json"),
-        (FileNotFoundError, None),  # File doesn't exist
+        # Invalid JSON and missing files now produce friendly errors and exit
+        # non-zero via SystemExit (mirroring apply.py behavior).
+        (SystemExit, "invalid json"),
+        (SystemExit, None),  # File doesn't exist
         (
             TypeError,
             '[{"markdown_file": "test.md"}]',
-        ),  # Missing required fields
+        ),  # Missing required fields (unguarded, raw exception)
     ],
 )
 def test_label_from_suggestions_file_error_handling(
@@ -320,6 +322,28 @@ def test_label_from_suggestions_file_error_handling(
         label.label_from_suggestions_file(
             suggestions_file, temp_dir / "output.json", skip_existing=False
         )
+
+
+def test_label_from_suggestions_file_friendly_errors_exit_nonzero(
+    temp_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Missing file and bad JSON print a red error and exit non-zero."""
+    missing = temp_dir / "missing.json"
+    with pytest.raises(SystemExit) as exc_info:
+        label.label_from_suggestions_file(
+            missing, temp_dir / "output.json", skip_existing=False
+        )
+    assert exc_info.value.code != 0
+    assert "not found" in capsys.readouterr().out
+
+    bad = temp_dir / "bad.json"
+    bad.write_text("not json", encoding="utf-8")
+    with pytest.raises(SystemExit) as exc_info:
+        label.label_from_suggestions_file(
+            bad, temp_dir / "output.json", skip_existing=False
+        )
+    assert exc_info.value.code != 0
+    assert "Invalid JSON" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("user_input", ["undo", "u", "UNDO"])
@@ -424,7 +448,7 @@ def test_label_suggestions_sequences(
         side_effect=mock_process_single_suggestion,
     ):
         label.label_suggestions(
-            suggestions, console, output_path, append_mode=True
+            suggestions, console, output_path, skip_existing=True
         )
 
     saved = [
@@ -474,7 +498,7 @@ def test_prefill_after_undo(temp_dir: Path) -> None:
         side_effect=mock_process_single_suggestion,
     ):
         label.label_suggestions(
-            suggestions, console, output_path, append_mode=False
+            suggestions, console, output_path, skip_existing=False
         )
 
     # First prompt: no prefill; re-prompt after undo: prefilled with prior accepted text
@@ -529,6 +553,234 @@ def test_label_suggestions_empty_list(temp_dir: Path) -> None:
 
     output = temp_dir / "output.json"
     result = label.label_suggestions(
-        [], Console(file=StringIO()), output, append_mode=False
+        [], Console(file=StringIO()), output, skip_existing=False
     )
     assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# New UX / robustness behaviors
+# ---------------------------------------------------------------------------
+
+
+def test_show_progress_reaches_100_and_guards_zero() -> None:
+    """Progress hits 100% on the last item and never divides by zero."""
+    from io import StringIO
+
+    out = StringIO()
+    display = label.DisplayManager(Console(file=out))
+
+    display.show_progress(1, 3)
+    display.show_progress(3, 3)
+    display.show_progress(1, 0)  # must not raise ZeroDivisionError
+
+    text = out.getvalue()
+    assert "1/3 (33.3%)" in text
+    assert "3/3 (100.0%)" in text
+    assert "1/0 (0.0%)" in text
+
+
+@pytest.mark.parametrize(
+    "user_input,sentinel",
+    [
+        ("q", label.QUIT_REQUESTED),
+        ("quit", label.QUIT_REQUESTED),
+        ("s", label.SKIP_REQUESTED),
+        ("skip", label.SKIP_REQUESTED),
+    ],
+)
+def test_prompt_for_edit_quit_skip_commands(
+    user_input: str, sentinel: str
+) -> None:
+    """prompt_for_edit returns quit/skip sentinels."""
+    display = label.DisplayManager(Console())
+    with patch("alt_text_llm.label.prompt", return_value=user_input):
+        assert display.prompt_for_edit("suggestion") == sentinel
+
+
+def test_prompt_for_edit_help_reprompts() -> None:
+    """help/? prints commands and re-prompts, then returns the accepted text."""
+    from io import StringIO
+
+    out = StringIO()
+    display = label.DisplayManager(Console(file=out))
+    responses = iter(["?", "final text"])
+
+    with patch(
+        "alt_text_llm.label.prompt", side_effect=lambda *a, **k: next(responses)
+    ):
+        result = display.prompt_for_edit("suggestion")
+
+    assert result == "final text"
+    assert "Commands:" in out.getvalue()
+
+
+def _label_with_single_input(
+    suggestions, output_path, user_input, *, mock_show_image=True
+):
+    """Run label_suggestions through a real prompt that returns user_input.
+
+    Downloads are mocked and the prompt returns user_input. show_image is
+    mocked by default; pass mock_show_image=False to exercise the real method.
+    """
+    def mock_download_asset(queue_item, workspace):
+        test_file = workspace / "test.jpg"
+        test_file.write_bytes(b"fake image")
+        return test_file
+
+    patches = [
+        patch("sys.stdout.isatty", return_value=True),
+        patch.object(utils, "download_asset", side_effect=mock_download_asset),
+        patch.object(label.DisplayManager, "show_context"),
+        patch.object(label.DisplayManager, "show_rule"),
+        patch("alt_text_llm.label.prompt", return_value=user_input),
+    ]
+    if mock_show_image:
+        patches.append(patch.object(label.DisplayManager, "show_image"))
+
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        return label.label_suggestions(
+            suggestions, Console(), output_path, skip_existing=False
+        )
+
+
+def test_quit_command_stops_loop_and_saves(temp_dir: Path) -> None:
+    """A quit command saves progress for prior items and stops labeling."""
+    output_path = temp_dir / "out.json"
+    suggestions = [create_alt(1), create_alt(2), create_alt(3)]
+
+    # Accept the first item, then quit on the second.
+    responses = iter(["accepted one", "q", "should not reach"])
+
+    def mock_download_asset(queue_item, workspace):
+        f = workspace / "test.jpg"
+        f.write_bytes(b"fake")
+        return f
+
+    with (
+        patch("sys.stdout.isatty", return_value=True),
+        patch.object(utils, "download_asset", side_effect=mock_download_asset),
+        patch.object(label.DisplayManager, "show_context"),
+        patch.object(label.DisplayManager, "show_rule"),
+        patch.object(label.DisplayManager, "show_image"),
+        patch(
+            "alt_text_llm.label.prompt",
+            side_effect=lambda *a, **k: next(responses),
+        ),
+    ):
+        count = label.label_suggestions(
+            suggestions, Console(), output_path, skip_existing=False
+        )
+
+    assert count == 1
+    saved = json.loads(output_path.read_text(encoding="utf-8"))
+    assert [r["final_alt"] for r in saved] == ["accepted one"]
+
+
+def test_skip_command_advances_without_recording(temp_dir: Path) -> None:
+    """A skip command advances without recording the item."""
+    output_path = temp_dir / "out.json"
+    suggestions = [create_alt(1), create_alt(2)]
+
+    responses = iter(["s", "kept two"])
+
+    def mock_download_asset(queue_item, workspace):
+        f = workspace / "test.jpg"
+        f.write_bytes(b"fake")
+        return f
+
+    with (
+        patch("sys.stdout.isatty", return_value=True),
+        patch.object(utils, "download_asset", side_effect=mock_download_asset),
+        patch.object(label.DisplayManager, "show_context"),
+        patch.object(label.DisplayManager, "show_rule"),
+        patch.object(label.DisplayManager, "show_image"),
+        patch(
+            "alt_text_llm.label.prompt",
+            side_effect=lambda *a, **k: next(responses),
+        ),
+    ):
+        count = label.label_suggestions(
+            suggestions, Console(), output_path, skip_existing=False
+        )
+
+    assert count == 1
+    saved = json.loads(output_path.read_text(encoding="utf-8"))
+    assert [r["final_alt"] for r in saved] == ["kept two"]
+
+
+def test_image_display_failure_does_not_crash_labeling(temp_dir: Path) -> None:
+    """In tmux (show_image raises ValueError) labeling still records captions."""
+    output_path = temp_dir / "out.json"
+    suggestions = [create_alt(1)]
+
+    # Real show_image is used; TMUX env makes it raise ValueError.
+    with patch.dict("os.environ", {"TMUX": "1"}):
+        count = _label_with_single_input(
+            suggestions,
+            output_path,
+            "edited despite tmux",
+            mock_show_image=False,
+        )
+
+    assert count == 1
+    saved = json.loads(output_path.read_text(encoding="utf-8"))
+    assert saved[0]["final_alt"] == "edited despite tmux"
+
+
+def test_non_interactive_warns_and_autoaccepts(temp_dir: Path) -> None:
+    """Non-tty labeling warns once and accepts the suggestion as-is."""
+    from io import StringIO
+
+    output_path = temp_dir / "out.json"
+    suggestions = [create_alt(1)]
+    out = StringIO()
+
+    def mock_download_asset(queue_item, workspace):
+        f = workspace / "test.jpg"
+        f.write_bytes(b"fake")
+        return f
+
+    with (
+        patch("sys.stdout.isatty", return_value=False),
+        patch.object(utils, "download_asset", side_effect=mock_download_asset),
+        patch.object(label.DisplayManager, "show_context"),
+        patch.object(label.DisplayManager, "show_rule"),
+        patch.object(label.DisplayManager, "show_image"),
+    ):
+        count = label.label_suggestions(
+            suggestions, Console(file=out), output_path, skip_existing=False
+        )
+
+    assert count == 1
+    assert "Non-interactive terminal" in out.getvalue()
+    saved = json.loads(output_path.read_text(encoding="utf-8"))
+    # suggested_alt for create_alt(1) is "suggestion 1"
+    assert saved[0]["final_alt"] == "suggestion 1"
+
+
+def test_no_skip_existing_relabel_preserves_prior_captions(
+    temp_dir: Path,
+) -> None:
+    """--no-skip-existing relabel must never overwrite prior captions.
+
+    Pre-populate the output file with a prior caption, then run a labeling
+    session with skip_existing=False (the --no-skip-existing path). The prior
+    caption must still be present afterwards (appended, not overwritten).
+    """
+    output_path = temp_dir / "captions.json"
+    prior = create_alt(99, final_alt="prior caption that must survive")
+    utils.write_output([prior], output_path, append_mode=False)
+
+    suggestions = [create_alt(1)]
+    count = _label_with_single_input(
+        suggestions, output_path, "newly labeled"
+    )
+
+    assert count == 1
+    saved = json.loads(output_path.read_text(encoding="utf-8"))
+    final_alts = [r["final_alt"] for r in saved]
+    assert "prior caption that must survive" in final_alts
+    assert "newly labeled" in final_alts

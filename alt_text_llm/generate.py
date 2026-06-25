@@ -23,6 +23,11 @@ def _run_llm(
 
     Returns the caption text and the request's actual cost in USD (``None`` if
     OpenRouter did not report a cost for the request).
+
+    A timeout (or any transport failure) surfaces as an
+    :class:`~alt_text_llm.openrouter.OpenRouterError`, a subclass of
+    :class:`utils.AltGenerationError`, so a single slow item is skipped rather
+    than aborting the whole async batch.
     """
     caption, usage = openrouter.generate_caption(
         attachment, prompt, model, timeout
@@ -99,18 +104,23 @@ _CONCURRENCY_LIMIT = 32
 
 
 async def _run_llm_async(
+    index: int,
     queue_item: "scan.QueueItem",
     options: GenerateAltTextOptions,
     sem: asyncio.Semaphore,
-) -> tuple[utils.AltGenerationResult, float | None]:
+) -> tuple[int, utils.AltGenerationResult, float | None]:
     """Download asset, run LLM in a thread; clean up; return suggestion payload.
 
-    Returns the suggestion alongside the request's actual cost in USD (``None``
-    when OpenRouter did not report a cost).
+    Returns the original *index* (for deterministic ordering), the suggestion,
+    and the request's actual cost in USD (``None`` when OpenRouter did not
+    report a cost).
     """
-    workspace = Path(tempfile.mkdtemp())
-    try:
-        async with sem:
+    # Create the temp dir inside the semaphore so that a large queue does not
+    # spawn thousands of temp directories upfront (all tasks are created
+    # eagerly). Only up to _CONCURRENCY_LIMIT workspaces exist at once.
+    async with sem:
+        workspace = Path(tempfile.mkdtemp())
+        try:
             attachment = await asyncio.to_thread(
                 utils.download_asset, queue_item, workspace
             )
@@ -122,17 +132,17 @@ async def _run_llm_async(
                 options.model,
                 options.timeout,
             )
-        result = utils.AltGenerationResult(
-            markdown_file=queue_item.markdown_file,
-            asset_path=queue_item.asset_path,
-            suggested_alt=caption,
-            model=options.model,
-            context_snippet=queue_item.context_snippet,
-            line_number=queue_item.line_number,
-        )
-        return result, cost
-    finally:
-        shutil.rmtree(workspace, ignore_errors=True)
+            result = utils.AltGenerationResult(
+                markdown_file=queue_item.markdown_file,
+                asset_path=queue_item.asset_path,
+                suggested_alt=caption,
+                model=options.model,
+                context_snippet=queue_item.context_snippet,
+                line_number=queue_item.line_number,
+            )
+            return index, result, cost
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
 
 
 async def async_generate_suggestions(
@@ -149,19 +159,21 @@ async def async_generate_suggestions(
 
     sem = asyncio.Semaphore(_CONCURRENCY_LIMIT)
     tasks = [
-        asyncio.create_task(_run_llm_async(qi, options, sem))
-        for qi in queue_items
+        asyncio.create_task(_run_llm_async(index, qi, options, sem))
+        for index, qi in enumerate(queue_items)
     ]
 
-    suggestions: list[utils.AltGenerationResult] = []
+    # Collect by original index so output order is deterministic (matches input
+    # order) regardless of completion order. Failed/skipped items are omitted.
+    completed: dict[int, utils.AltGenerationResult] = {}
     total_cost = 0.0
     with Progress() as progress:
         task_id = progress.add_task("Generating alt text", total=len(tasks))
         try:
             for finished in asyncio.as_completed(tasks):
                 try:
-                    result, cost = await finished
-                    suggestions.append(result)
+                    index, result, cost = await finished
+                    completed[index] = result
                     if cost is not None:
                         total_cost += cost
                 except (
@@ -182,4 +194,4 @@ async def async_generate_suggestions(
             f"[bold blue]Actual cost: ${total_cost:.4f}[/bold blue]"
         )
 
-    return suggestions
+    return [completed[index] for index in sorted(completed)]

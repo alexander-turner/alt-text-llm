@@ -5,11 +5,13 @@
 import argparse
 import asyncio
 import json
+import sys
 from enum import StrEnum
 from pathlib import Path
 
 from rich.console import Console
 
+import alt_text_llm
 from alt_text_llm import apply, generate, label, openrouter, scan, utils
 
 _JSON_INDENT: int = 2
@@ -24,8 +26,17 @@ class Command(StrEnum):
     APPLY = "apply"
 
 
+def _validate_root(root: Path, console: Console) -> None:
+    """Exit non-zero with a friendly message if *root* is missing."""
+    if not root.exists():
+        console.print(f"[red]Error: Root directory not found: {root}[/red]")
+        raise SystemExit(1)
+
+
 def _scan_command(args: argparse.Namespace) -> None:
     """Execute the scan sub-command."""
+    console = Console()
+    _validate_root(args.root, console)
     output_path = args.output
     queue_items = scan.build_queue(args.root)
 
@@ -53,6 +64,7 @@ def _generate_command(args: argparse.Namespace) -> None:
 
     suggestions_path = args.suggestions_file
     console = Console()
+    _validate_root(opts.root, console)
 
     # Fail fast (before scanning/generating) if the key is missing, unless we
     # are only estimating cost — the public model catalogue needs no key.
@@ -98,6 +110,17 @@ def _generate_command(args: argparse.Namespace) -> None:
             "https://openrouter.ai/models or tab-complete --model.[/yellow]"
         )
 
+    # Confirm before spending money, unless explicitly skipped or running
+    # in a non-interactive context (automation/tests).
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if not args.yes and interactive:
+        answer = input(
+            f"Generate {len(queue_items)} suggestions with '{opts.model}'? [y/N] "
+        )
+        if answer.strip().lower() not in ("y", "yes"):
+            console.print("[yellow]Aborted; no suggestions generated.[/yellow]")
+            return
+
     console.print(
         f"[bold green]Generating {len(queue_items)} suggestions with '{opts.model}'[/bold green]"
     )
@@ -128,8 +151,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Alt text generation and labeling workflows"
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {alt_text_llm.__version__}",
+    )
     subparsers = parser.add_subparsers(
-        dest="command", help="Available commands"
+        dest="command", required=True, help="Available commands"
     )
 
     # ---------------------------------------------------------------------------
@@ -202,6 +230,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--estimate-only",
         action="store_true",
         help="Only estimate cost without generating suggestions",
+    )
+    generate_parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip the cost-confirmation prompt before generating",
     )
     generate_parser.set_defaults(skip_existing=True)
 
@@ -286,8 +320,8 @@ def main() -> None:
         label.label_from_suggestions_file(
             args.suggestions_file,
             args.output,
-            args.skip_existing,
-            args.vi_mode,
+            skip_existing=args.skip_existing,
+            vi_mode=args.vi_mode,
         )
     elif args.command == Command.APPLY:
         apply.apply_from_captions_file(args.captions_file, args.dry_run)

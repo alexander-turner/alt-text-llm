@@ -1,6 +1,8 @@
 """Shared utilities for alt text generation and labeling."""
 
+import hashlib
 import json
+import re
 import shutil
 import subprocess
 import textwrap
@@ -24,6 +26,18 @@ if TYPE_CHECKING:
     from alt_text_llm import scan
 
 _executable_cache: Dict[str, str] = {}
+
+# Maximum size (in bytes) for a streamed remote asset download.
+_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+
+# Default headers for outbound asset requests.
+_REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/91.0.4472.124 Safari/537.36"
+    )
+}
 
 
 def find_executable(name: str) -> str:
@@ -147,31 +161,54 @@ def split_yaml(file_path: Path, verbose: bool = False) -> tuple[dict, str]:
     )  # 'rt' means round-trip, preserving comments and formatting
     yaml.preserve_quotes = True  # Preserve quote style
 
-    with file_path.open("r", encoding="utf-8") as f:
+    # Read with utf-8-sig so a leading BOM doesn't break line-1 fence detection.
+    with file_path.open("r", encoding="utf-8-sig") as f:
         content = f.read()
 
-    # Split frontmatter and content
-    parts = content.split("---", 2)
-    if len(parts) < 3:
+    # Frontmatter only exists when the file starts with a `---` fence on line 1
+    # (optional leading whitespace allowed) followed by a newline. Otherwise a
+    # body containing `---` thematic breaks would be misread as frontmatter.
+    opening = re.match(r"^[ \t]*---[ \t]*\r?\n", content)
+    if opening is None:
         if verbose:
             print(f"Skipping {file_path}: No valid frontmatter found")
         return {}, ""
 
+    remainder = content[opening.end() :]
+
+    # Split on the closing delimiter using a line-anchored match so that `---`
+    # appearing inside a YAML value is not treated as the terminator.
+    closing_parts = re.split(r"(?m)^[ \t]*---[ \t]*$", remainder, maxsplit=1)
+    if len(closing_parts) < 2:
+        if verbose:
+            print(f"Skipping {file_path}: No valid frontmatter found")
+        return {}, ""
+
+    frontmatter_text, body = closing_parts
+
     try:
-        metadata = yaml.load(parts[1])
-        if not metadata:
+        metadata = yaml.load(frontmatter_text)
+        if not metadata or not isinstance(metadata, dict):
             metadata = {}
     except YAMLError as e:
         print(f"Error parsing YAML in {file_path}: {str(e)}")
         return {}, ""
 
-    return metadata, parts[2]
+    return metadata, body
 
 
 def is_url(path: str) -> bool:
-    """Check if path is a URL."""
+    """Check if *path* refers to a remote resource rather than a local file.
+
+    Recognizes ``http``/``https`` URLs, ``data:`` URIs, and protocol-relative
+    ``//host/...`` references.
+    """
+    if path.startswith("//"):
+        return True
     parsed = urlparse(path)
-    return bool(parsed.scheme and parsed.netloc)
+    if parsed.scheme == "data":
+        return True
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def _parse_paragraphs(
@@ -208,9 +245,10 @@ def _find_target_paragraph(
     selected_line = lines[target_idx] if target_idx < len(lines) else ""
 
     if selected_line.strip() != "":
-        selected_stripped = selected_line.rstrip("\n")
-        for i, paragraph in enumerate(paragraphs):
-            if selected_stripped in paragraph:
+        # Locate the paragraph by interval containment so duplicate lines in
+        # different paragraphs resolve to the correct one.
+        for i, start in enumerate(paragraph_starts):
+            if start <= target_idx < start + len(paragraphs[i]):
                 return i
     else:
         for i, start in enumerate(paragraph_starts):
@@ -290,6 +328,11 @@ class AltGenerationResult:
     line_number: int | None = None
     final_alt: str | None = None
 
+    @property
+    def prefill_alt(self) -> str | None:
+        """Best available alt text: the final edit if present, else suggestion."""
+        return self.final_alt if self.final_alt is not None else self.suggested_alt
+
     def to_json(self) -> dict[str, object]:
         """Convert to JSON-serializable dict."""
         return asdict(self)
@@ -308,12 +351,25 @@ class AltGenerationError(Exception):
     """Raised when caption generation fails."""
 
 
+def _unique_target_name(asset_path: Path, suffix: str) -> str:
+    """Build a collision-resistant target filename for a converted asset.
+
+    Two source assets that share a stem (but live in different directories)
+    would otherwise collide in a single workspace, so include a short hash of
+    the source path.
+    """
+    digest = hashlib.sha1(
+        str(asset_path).encode("utf-8"), usedforsecurity=False
+    ).hexdigest()[:8]
+    return f"{asset_path.stem}-{digest}{suffix}"
+
+
 def _convert_avif_to_png(asset_path: Path, workspace: Path) -> Path:
     """Convert AVIF images to PNG format for LLM compatibility."""
     if asset_path.suffix.lower() != ".avif":
         return asset_path
 
-    png_target = workspace / f"{asset_path.stem}.png"
+    png_target = workspace / _unique_target_name(asset_path, ".png")
     magick_executable = find_executable("magick")
 
     try:
@@ -322,11 +378,16 @@ def _convert_avif_to_png(asset_path: Path, workspace: Path) -> Path:
             check=True,
             capture_output=True,
             text=True,
+            timeout=30,
         )
         return png_target
     except subprocess.CalledProcessError as err:
         raise AltGenerationError(
             f"Failed to convert AVIF to PNG: {err.stderr or err.stdout}"
+        ) from err
+    except subprocess.TimeoutExpired as err:
+        raise AltGenerationError(
+            f"Failed to convert AVIF to PNG: {err}"
         ) from err
 
 
@@ -335,7 +396,7 @@ def _convert_gif_to_mp4(asset_path: Path, workspace: Path) -> Path:
     if asset_path.suffix.lower() != ".gif":
         raise ValueError(f"Unsupported file type '{asset_path.suffix}'.")
 
-    mp4_target = workspace / f"{asset_path.stem}.mp4"
+    mp4_target = workspace / _unique_target_name(asset_path, ".mp4")
     ffmpeg_executable = find_executable("ffmpeg")
 
     try:
@@ -375,29 +436,40 @@ def download_asset(queue_item: "scan.QueueItem", workspace: Path) -> Path:
     asset_path = queue_item.asset_path
 
     if is_url(asset_path):
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/91.0.4472.124 Safari/537.36"
+        scheme = urlparse(asset_path).scheme
+        if scheme not in {"http", "https"}:
+            # data: blobs and protocol-relative //host references are URLs but
+            # not fetched here. Raise a clear error rather than treating the
+            # value as a filesystem path.
+            raise AltGenerationError(
+                f"Unsupported remote asset reference '{asset_path}'"
             )
-        }
         response = requests.get(
-            asset_path, timeout=20, stream=True, headers=headers
+            asset_path, timeout=20, stream=True, headers=_REQUEST_HEADERS
         )
         response.raise_for_status()
         suffix = Path(urlparse(asset_path).path).suffix or ".bin"
         target = workspace / f"asset{suffix}"
+        total = 0
         with target.open("wb") as handle:
             for chunk in response.iter_content(chunk_size=8192):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > _MAX_DOWNLOAD_BYTES:
+                    raise AltGenerationError(
+                        f"Asset '{asset_path}' exceeds the maximum allowed "
+                        f"size of {_MAX_DOWNLOAD_BYTES} bytes"
+                    )
                 handle.write(chunk)
         return _convert_asset_for_llm(target, workspace)
 
     # Try relative to markdown file first
     markdown_path = Path(queue_item.markdown_file)
-    candidate = markdown_path.parent / asset_path
-    if candidate.exists():
-        return _convert_asset_for_llm(candidate.resolve(), workspace)
+    base_dir = markdown_path.parent.resolve()
+    candidate = (base_dir / asset_path).resolve()
+    if candidate.is_relative_to(base_dir) and candidate.exists():
+        return _convert_asset_for_llm(candidate, workspace)
 
     # Try relative to git root, if inside a git repository
     try:
@@ -405,9 +477,10 @@ def download_asset(queue_item: "scan.QueueItem", workspace: Path) -> Path:
     except (subprocess.CalledProcessError, FileNotFoundError):
         git_root = None
     if git_root is not None:
-        alternative = git_root / asset_path.lstrip("/")
-        if alternative.exists():
-            return _convert_asset_for_llm(alternative.resolve(), workspace)
+        git_root = git_root.resolve()
+        alternative = (git_root / asset_path.lstrip("/")).resolve()
+        if alternative.is_relative_to(git_root) and alternative.exists():
+            return _convert_asset_for_llm(alternative, workspace)
 
     raise FileNotFoundError(
         f"Unable to locate asset '{asset_path}' referenced in {queue_item.markdown_file}"
@@ -423,7 +496,7 @@ def generate_article_context(
     """Generate context with all preceding paragraphs and 2 after for LLM
     prompts."""
     markdown_path = Path(queue_item.markdown_file)
-    source_text = markdown_path.read_text(encoding="utf-8")
+    source_text = markdown_path.read_text(encoding="utf-8-sig")
     source_lines = source_text.splitlines()
 
     # Convert from 1-based line number to 0-based index
@@ -441,6 +514,10 @@ def generate_article_context(
             line_number_to_pass = (
                 queue_item.line_number - 1 - num_frontmatter_lines
             )
+
+    # Clamp to avoid a negative index reaching paragraph_context (which raises
+    # ValueError on target_idx < 0).
+    line_number_to_pass = max(0, line_number_to_pass)
 
     return paragraph_context(
         lines_to_show,
