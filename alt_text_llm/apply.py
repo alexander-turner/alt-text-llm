@@ -76,6 +76,72 @@ def _extract_media_src(tag_name: str, element: object) -> str | None:
     return None
 
 
+def _escape_html_attr(value: str) -> str:
+    """Escape a string for use inside a double-quoted HTML attribute value."""
+    value = value.replace("&", "&amp;")
+    value = value.replace("<", "&lt;")
+    value = value.replace(">", "&gt;")
+    value = value.replace('"', "&quot;")
+    return value
+
+
+def _sourcepos_to_index(text: str, sourceline: int | None, sourcepos: int | None) -> int | None:
+    """Convert a (1-based line, 0-based column) BeautifulSoup position to an index."""
+    if sourceline is None or sourcepos is None:
+        return None
+    lines = text.split("\n")
+    if not 1 <= sourceline <= len(lines):
+        return None
+    # Account for the "\n" separators removed by split().
+    offset = sum(len(lines[i]) + 1 for i in range(sourceline - 1))
+    return offset + sourcepos
+
+
+def _find_opening_tag_end(text: str, start: int) -> int | None:
+    """Return the index of the '>' that closes the opening tag starting at ``start``.
+
+    Skips over '>' characters that appear inside quoted attribute values.
+    """
+    quote: str | None = None
+    for i in range(start, len(text)):
+        char = text[i]
+        if quote is not None:
+            if char == quote:
+                quote = None
+        elif char in ("'", '"'):
+            quote = char
+        elif char == ">":
+            return i
+    return None
+
+
+def _set_attribute_in_opening_tag(
+    opening_tag: str, write_attr: str, new_value: str
+) -> str:
+    """Replace ``write_attr`` in ``opening_tag`` if present, otherwise insert it.
+
+    Only the opening tag's text is touched; the value is HTML-escaped and always
+    emitted with double quotes.
+    """
+    escaped = _escape_html_attr(new_value)
+    replacement = f'{write_attr}="{escaped}"'
+
+    # Match an existing attribute with optional value (quoted, unquoted, or bare).
+    attr_pattern = re.compile(
+        rf"""(?<=[\s<])({re.escape(write_attr)})(\s*=\s*("[^"]*"|'[^']*'|[^\s>/]*))?""",
+        re.IGNORECASE,
+    )
+    new_tag, count = attr_pattern.subn(lambda _m: replacement, opening_tag, count=1)
+    if count:
+        return new_tag
+
+    # Attribute absent: insert before the closing '>' (or '/>').
+    insertion_point = len(opening_tag) - (2 if opening_tag.endswith("/>") else 1)
+    prefix = opening_tag[:insertion_point].rstrip()
+    suffix = opening_tag[insertion_point:]
+    return f"{prefix} {replacement}{suffix}"
+
+
 def _apply_html_tag_attribute(
     *,
     line: str,
@@ -88,7 +154,13 @@ def _apply_html_tag_attribute(
     """Apply an attribute update to a specific HTML tag matched by src.
 
     Notes:
-        - Uses BeautifulSoup to parse and rewrite the line.
+        - Uses BeautifulSoup only to *locate* the matching tag and read its old
+          value; the rewrite is a surgical edit of the matched opening tag so the
+          rest of the line is preserved verbatim. Reserializing via ``str(soup)``
+          is unsafe here because a line may contain only a fragment of a
+          multi-line element (e.g. a ``<video>`` opening tag plus its first
+          ``<source>`` child), which BeautifulSoup would "repair" by closing the
+          element early and corrupting the markup.
         - Matching is done by exact equality against the resolved src (for videos,
           prefers @src and otherwise first <source src=...> child).
         - BeautifulSoup can raise ParserRejectedMarkup on lines containing
@@ -109,8 +181,18 @@ def _apply_html_tag_attribute(
 
         old_value_raw = next((el.get(a) for a in read_old_from if el.get(a)), None)
         old_value = str(old_value_raw) if old_value_raw is not None else None
-        el[write_attr] = new_value
-        return str(soup), old_value
+
+        start = _sourcepos_to_index(line, el.sourceline, el.sourcepos)  # type: ignore[attr-defined]
+        end = _find_opening_tag_end(line, start) if start is not None else None
+        if start is None or end is None:
+            # Fallback: reserialize (rare; only when source positions unavailable).
+            el[write_attr] = new_value
+            return str(soup), old_value
+
+        new_opening = _set_attribute_in_opening_tag(
+            line[start : end + 1], write_attr, new_value
+        )
+        return line[:start] + new_opening + line[end + 1 :], old_value
 
     return line, None
 
