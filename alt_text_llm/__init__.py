@@ -2,13 +2,14 @@
 
 __version__ = "1.4.0"
 
-from . import apply, generate, label, main, scan, utils
+from . import apply, generate, label, main, openrouter, scan, utils
 
 __all__ = [
     "apply",
     "generate",
     "label",
     "main",
+    "openrouter",
     "scan",
     "utils",
 ]

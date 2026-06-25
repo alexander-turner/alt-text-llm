@@ -4,10 +4,6 @@ set -e
 echo "Installing alt-text-llm and dependencies..."
 pip install -e .
 
-echo "Installing llm tool..."
-pip install llm
-llm install llm-gemini llm-claude
-
 echo ""
 echo "Installing system dependencies..."
 if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -26,4 +22,9 @@ fi
 
 echo ""
 echo "✅ Setup complete!"
-echo "Next step: Configure your LLM API key with 'llm keys set gemini'"
+echo "Next step: Set your OpenRouter API key (get one at https://openrouter.ai/keys):"
+echo "    export OPENROUTER_API_KEY=sk-or-..."
+echo ""
+echo "Optional: enable shell tab-completion."
+echo "    bash: activate-global-python-argcomplete   (one-time, then restart shell)"
+echo "    or:   eval \"\$(register-python-argcomplete alt-text-llm)\""

@@ -1,5 +1,7 @@
 """Main entry point for alt text generation and labeling workflows."""
 
+# PYTHON_ARGCOMPLETE_OK
+
 import argparse
 import asyncio
 import json
@@ -8,7 +10,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from alt_text_llm import apply, generate, label, scan, utils
+from alt_text_llm import apply, generate, label, openrouter, scan, utils
 
 _JSON_INDENT: int = 2
 
@@ -51,6 +53,16 @@ def _generate_command(args: argparse.Namespace) -> None:
 
     suggestions_path = args.suggestions_file
     console = Console()
+
+    # Fail fast (before scanning/generating) if the key is missing, unless we
+    # are only estimating cost — the public model catalogue needs no key.
+    if not args.estimate_only:
+        try:
+            openrouter.get_api_key()
+        except openrouter.OpenRouterError as err:
+            console.print(f"[red]{err}[/red]")
+            return
+
     queue_items = scan.build_queue(opts.root)
 
     if opts.skip_existing:
@@ -76,6 +88,16 @@ def _generate_command(args: argparse.Namespace) -> None:
         console.print("[yellow]No items to process.[/yellow]")
         return
 
+    # Warn (but proceed) if the model id is not in OpenRouter's catalogue: it is
+    # likely a typo or a bare name missing its `provider/` prefix.
+    known_models = openrouter.list_model_ids()
+    if known_models and opts.model not in known_models:
+        console.print(
+            f"[yellow]Warning: '{opts.model}' is not a known OpenRouter model id. "
+            "Model ids look like 'google/gemini-2.5-flash'; browse "
+            "https://openrouter.ai/models or tab-complete --model.[/yellow]"
+        )
+
     console.print(
         f"[bold green]Generating {len(queue_items)} suggestions with '{opts.model}'[/bold green]"
     )
@@ -92,8 +114,17 @@ def _generate_command(args: argparse.Namespace) -> None:
         )
 
 
-def _parse_args() -> argparse.Namespace:
-    """Parse command-line arguments for all alt text workflows."""
+def _model_completer(prefix: str, **_kwargs: object) -> list[str]:
+    """Shell-completion callback: suggest OpenRouter model ids matching *prefix*."""
+    return [
+        model_id
+        for model_id in openrouter.list_model_ids()
+        if model_id.startswith(prefix)
+    ]
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the argument parser for all alt text workflows."""
     parser = argparse.ArgumentParser(
         description="Alt text generation and labeling workflows"
     )
@@ -133,9 +164,13 @@ def _parse_args() -> argparse.Namespace:
         default=Path.cwd(),
         help="Markdown root directory (default: current directory)",
     )
-    generate_parser.add_argument(
-        "--model", required=True, help="LLM model to use for generation"
+    model_arg = generate_parser.add_argument(
+        "--model",
+        required=True,
+        help="OpenRouter model id, e.g. 'google/gemini-2.5-flash'",
     )
+    # Enables `--model <TAB>` to complete live OpenRouter model ids.
+    model_arg.completer = _model_completer  # type: ignore[attr-defined]
     generate_parser.add_argument(
         "--max-chars",
         type=int,
@@ -219,6 +254,22 @@ def _parse_args() -> argparse.Namespace:
         default=False,
         help="Show what would be changed without modifying files",
     )
+
+    return parser
+
+
+def _parse_args() -> argparse.Namespace:
+    """Build the parser, enable shell completion, and parse arguments."""
+    parser = _build_parser()
+
+    # Activate argcomplete if installed. Completion runs only when the shell
+    # invokes us in completion mode, so this is a no-op for normal runs.
+    try:
+        import argcomplete
+
+        argcomplete.autocomplete(parser)
+    except ImportError:
+        pass
 
     return parser.parse_args()
 
