@@ -9,7 +9,7 @@ AI-powered alt text generation and labeling tools for markdown content. Original
 - **Interactive labeling** - Manually review and edit LLM suggestions. Images display directly in your terminal
 - **Automatic application** - Apply approved captions back to your markdown files
 
-![A labeled example of the labeling pipeline: 1) view the context for an image, 2) view the image itself, while 3) editing the AI-generated label suggestion.](image.png)
+![A labeled example of the labeling pipeline: 1) view the context for an image, 2) view the image itself, while 3) editing the AI-generated label suggestion.](https://raw.githubusercontent.com/alexander-turner/alt-text-llm/main/image.png)
 
 ## Installation
 
@@ -73,8 +73,11 @@ alt-text-llm generate \
 **Available options:**
 
 - `--model` (required) - LLM model to use (e.g., `gemini-2.5-flash`, `gpt-4o-mini`, `claude-3-5-sonnet`)
+- `--root` - Markdown root directory (default: current directory)
 - `--max-chars` - Maximum characters for alt text (default: 300)
 - `--timeout` - LLM timeout in seconds (default: 120)
+- `--captions` - Existing/final captions JSON path used to skip already-captioned assets (default: `asset_captions.json`)
+- `--suggestions-file` - Path to read/write suggestions JSON (default: `suggested_alts.json`)
 - `--estimate-only` - Only show cost estimate without generating
 - `--process-existing` - Also process assets that already have captions
 
