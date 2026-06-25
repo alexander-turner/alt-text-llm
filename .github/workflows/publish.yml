@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -46,6 +49,8 @@ jobs:
   version-check:
     name: Check if version needs publishing
     needs: test
+    # Only publish from pushes to main, never from pull requests.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.check.outputs.version }}
