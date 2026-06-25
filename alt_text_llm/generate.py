@@ -25,6 +25,12 @@ MODEL_COSTS = {
         "output": 0.00004,
     },
     "gemini-2.5-flash-preview-09-2025": {"input": 0.00001, "output": 0.00004},
+    # Approximate per-1K-token costs for a few widely-used non-Gemini models.
+    # These are rough public list prices (USD per 1K tokens) and may drift over
+    # time as providers change pricing -- treat them as estimates only.
+    "gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
+    "claude-3-5-sonnet": {"input": 0.003, "output": 0.015},
+    "claude-3-5-haiku": {"input": 0.0008, "output": 0.004},
 }
 
 
@@ -37,13 +43,20 @@ def _run_llm(
     """Execute LLM command and return generated caption."""
     llm_path = utils.find_executable("llm")
 
-    result = subprocess.run(
-        [llm_path, "-m", model, "-a", str(attachment), "--usage", prompt],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        result = subprocess.run(
+            [llm_path, "-m", model, "-a", str(attachment), "--usage", prompt],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as err:
+        # Convert to a skippable error so a single slow item does not abort
+        # the entire async batch.
+        raise utils.AltGenerationError(
+            f"LLM timed out after {timeout}s for {attachment}"
+        ) from err
 
     if result.returncode != 0:
         error_output = result.stderr.strip() or result.stdout.strip()
@@ -123,14 +136,18 @@ _CONCURRENCY_LIMIT = 32
 
 
 async def _run_llm_async(
+    index: int,
     queue_item: "scan.QueueItem",
     options: GenerateAltTextOptions,
     sem: asyncio.Semaphore,
-) -> utils.AltGenerationResult:
+) -> tuple[int, utils.AltGenerationResult]:
     """Download asset, run LLM in a thread; clean up; return suggestion payload."""
-    workspace = Path(tempfile.mkdtemp())
-    try:
-        async with sem:
+    # Create the temp dir inside the semaphore so that a large queue does not
+    # spawn thousands of temp directories upfront (all tasks are created
+    # eagerly). Only up to _CONCURRENCY_LIMIT workspaces exist at once.
+    async with sem:
+        workspace = Path(tempfile.mkdtemp())
+        try:
             attachment = await asyncio.to_thread(
                 utils.download_asset, queue_item, workspace
             )
@@ -142,16 +159,16 @@ async def _run_llm_async(
                 options.model,
                 options.timeout,
             )
-        return utils.AltGenerationResult(
-            markdown_file=queue_item.markdown_file,
-            asset_path=queue_item.asset_path,
-            suggested_alt=caption,
-            model=options.model,
-            context_snippet=queue_item.context_snippet,
-            line_number=queue_item.line_number,
-        )
-    finally:
-        shutil.rmtree(workspace, ignore_errors=True)
+            return index, utils.AltGenerationResult(
+                markdown_file=queue_item.markdown_file,
+                asset_path=queue_item.asset_path,
+                suggested_alt=caption,
+                model=options.model,
+                context_snippet=queue_item.context_snippet,
+                line_number=queue_item.line_number,
+            )
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
 
 
 async def async_generate_suggestions(
@@ -164,17 +181,20 @@ async def async_generate_suggestions(
 
     sem = asyncio.Semaphore(_CONCURRENCY_LIMIT)
     tasks = [
-        asyncio.create_task(_run_llm_async(qi, options, sem))
-        for qi in queue_items
+        asyncio.create_task(_run_llm_async(index, qi, options, sem))
+        for index, qi in enumerate(queue_items)
     ]
 
-    suggestions: list[utils.AltGenerationResult] = []
+    # Collect by original index so output order is deterministic (matches input
+    # order) regardless of completion order. Failed/skipped items are omitted.
+    completed: dict[int, utils.AltGenerationResult] = {}
     with Progress() as progress:
         task_id = progress.add_task("Generating alt text", total=len(tasks))
         try:
             for finished in asyncio.as_completed(tasks):
                 try:
-                    suggestions.append(await finished)
+                    index, result = await finished
+                    completed[index] = result
                 except (
                     utils.AltGenerationError,
                     FileNotFoundError,
@@ -188,4 +208,4 @@ async def async_generate_suggestions(
                 description="Generating alt text (cancelled, finishing up...)",
             )
 
-    return suggestions
+    return [completed[index] for index in sorted(completed)]
