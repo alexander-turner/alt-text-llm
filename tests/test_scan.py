@@ -543,3 +543,113 @@ def test_url_assets_detected(tmp_path: Path) -> None:
     queue = scan.build_queue(tmp_path)
     assert len(queue) == 1
     assert queue[0].asset_path == "https://example.com/img.jpg"
+
+
+# ---------------------------------------------------------------------------
+# Robustness: a single failing asset/file must not abort the rest
+# ---------------------------------------------------------------------------
+
+
+def test_failing_asset_does_not_abort_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A single asset that triggers ValueError is skipped; the rest still scan."""
+    md_content = "![](good.png)\n\n![](bad.png)\n"
+    _write_md(tmp_path, md_content, "robust.md")
+
+    real_get_line_number = scan._get_line_number
+
+    def fake_get_line_number(token, lines, search_snippet):  # type: ignore[no-untyped-def]
+        if "bad.png" in search_snippet:
+            raise ValueError("simulated unfindable asset")
+        return real_get_line_number(token, lines, search_snippet)
+
+    monkeypatch.setattr(scan, "_get_line_number", fake_get_line_number)
+
+    queue = scan.build_queue(tmp_path)
+    paths = {item.asset_path for item in queue}
+    # good.png survives even though bad.png blew up
+    assert paths == {"good.png"}
+
+
+def test_failing_asset_does_not_abort_other_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing asset in one file must not abort scanning of other files."""
+    _write_md(tmp_path, "![](bad.png)\n", "a_first.md")
+    _write_md(tmp_path, "![](good.png)\n", "b_second.md")
+
+    real_get_line_number = scan._get_line_number
+
+    def fake_get_line_number(token, lines, search_snippet):  # type: ignore[no-untyped-def]
+        if "bad.png" in search_snippet:
+            raise ValueError("simulated unfindable asset")
+        return real_get_line_number(token, lines, search_snippet)
+
+    monkeypatch.setattr(scan, "_get_line_number", fake_get_line_number)
+
+    queue = scan.build_queue(tmp_path)
+    paths = {item.asset_path for item in queue}
+    assert paths == {"good.png"}
+
+
+def test_unreadable_file_does_not_abort_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An OSError reading one file must not abort the whole batch."""
+    _write_md(tmp_path, "![](bad.png)\n", "a_bad.md")
+    _write_md(tmp_path, "![](good.png)\n", "b_good.md")
+
+    real_process_file = scan._process_file
+
+    def fake_process_file(md_path):  # type: ignore[no-untyped-def]
+        if md_path.name == "a_bad.md":
+            raise OSError("simulated unreadable file")
+        return real_process_file(md_path)
+
+    monkeypatch.setattr(scan, "_process_file", fake_process_file)
+
+    queue = scan.build_queue(tmp_path)
+    paths = {item.asset_path for item in queue}
+    assert paths == {"good.png"}
+
+
+def test_get_line_number_fallback_returns_first_match_for_duplicate(
+    tmp_path: Path,
+) -> None:
+    """Documents fallback behavior: first line containing the snippet wins.
+
+    When token.map is unavailable and the same asset substring appears on
+    multiple lines, _get_line_number returns the earliest occurrence.
+    """
+    lines = [
+        "intro",
+        "see (dup.png) here",  # line 2 (1-based)
+        "again (dup.png) there",  # line 3
+    ]
+    token = Token("image", "", 0)
+    token.map = None
+
+    assert scan._get_line_number(token, lines, "(dup.png)") == 2
+
+
+def test_is_meaningful_helper() -> None:
+    """The shared helper underlies both alt and video-label checks."""
+    assert scan._is_meaningful(None, {"image"}) is False
+    assert scan._is_meaningful("   ", {"image"}) is False
+    assert scan._is_meaningful("image", {"image"}) is False
+    assert scan._is_meaningful("IMAGE", {"image"}) is False
+    assert scan._is_meaningful("real description", {"image"}) is True
+
+
+def test_html_token_with_both_img_and_video_dispatches_img(tmp_path: Path) -> None:
+    """A single html block containing <img> dispatches to the img handler."""
+    _write_md(
+        tmp_path,
+        '<img src="pic.jpg"><video src="clip.mp4"></video>\n',
+        "both.md",
+    )
+    queue = scan.build_queue(tmp_path)
+    paths = {item.asset_path for item in queue}
+    # img-first dispatch (preserved from original behavior): the img is queued
+    assert "pic.jpg" in paths
