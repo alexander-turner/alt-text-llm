@@ -32,6 +32,7 @@ dependencies = [
     "rich>=13",
     "prompt_toolkit>=3",
     "beautifulsoup4>=4.11",
+    "argcomplete>=3",
 ]
 
 [project.optional-dependencies]

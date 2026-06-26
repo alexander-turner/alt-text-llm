@@ -33,15 +33,20 @@ cd alt-text-llm
 
 ```bash
 brew install imagemagick ffmpeg imgcat
-pip install llm
 ```
 
 **Linux:**
 
 ```bash
 sudo apt-get install imagemagick ffmpeg
-pip install llm
 # imgcat: curl -sL https://iterm2.com/utilities/imgcat -o ~/.local/bin/imgcat && chmod +x ~/.local/bin/imgcat
+```
+
+Alt text is generated through [OpenRouter](https://openrouter.ai). Get an API
+key at https://openrouter.ai/keys and export it before running `generate`:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...
 ```
 
 ## Usage
@@ -66,13 +71,13 @@ Generate alt text suggestions using an LLM:
 ```bash
 alt-text-llm generate \
   --root /path/to/markdown/files \
-  --model gemini-2.5-flash \
+  --model google/gemini-2.5-flash \
   --suggestions-file suggested_alts.json
 ```
 
 **Available options:**
 
-- `--model` (required) - LLM model to use (e.g., `gemini-2.5-flash`, `gpt-4o-mini`, `claude-3-5-sonnet`)
+- `--model` (required) - OpenRouter model id of the form `provider/model-slug` (e.g., `google/gemini-2.5-flash`, `google/gemini-2.5-flash-lite`, `google/gemini-2.5-pro`, `anthropic/claude-sonnet-4.5`). Browse all available ids at https://openrouter.ai/models.
 - `--root` - Markdown root directory (default: current directory)
 - `--max-chars` - Maximum characters for alt text (default: 300)
 - `--timeout` - LLM timeout in seconds (default: 120)
@@ -81,12 +86,20 @@ alt-text-llm generate \
 - `--estimate-only` - Only show cost estimate without generating
 - `--process-existing` - Also process assets that already have captions
 
+> **Note:** Video alt text generation requires a model that accepts video
+> input (the Google Gemini models).
+
 **Cost estimation:**
+
+Cost estimates are pulled live from OpenRouter's model catalogue
+(`https://openrouter.ai/api/v1/models`), so `--estimate-only` works for any
+model OpenRouter prices. After a real run, the tool also prints the actual
+total cost reported by OpenRouter per request.
 
 ```bash
 alt-text-llm generate \
   --root /path/to/markdown/files \
-  --model gemini-2.5-flash \
+  --model google/gemini-2.5-flash \
   --estimate-only
 ```
 
@@ -141,13 +154,13 @@ alt-text-llm scan --root ./content
 # 2. Estimate the cost
 alt-text-llm generate \
   --root ./content \
-  --model gemini-2.5-flash \
+  --model google/gemini-2.5-flash \
   --estimate-only
 
 # 3. Generate suggestions (if cost is acceptable)
 alt-text-llm generate \
   --root ./content \
-  --model gemini-2.5-flash
+  --model google/gemini-2.5-flash
 
 # 4. Review and approve suggestions
 alt-text-llm label
@@ -160,29 +173,61 @@ alt-text-llm apply
 
 ### LLM Integration
 
-This tool uses the [`llm` CLI tool](https://llm.datasette.io/) to generate alt text. This provides access to many different AI models including:
-
-- **Gemini** (Google) via the [llm-gemini plugin](https://github.com/simonw/llm-gemini)
-- **Claude** (Anthropic) via the [llm-claude-3 plugin](https://github.com/tomviner/llm-claude-3)
-- And [many more via plugins](https://llm.datasette.io/en/stable/plugins/directory.html)
+This tool calls [OpenRouter](https://openrouter.ai) directly over HTTPS to
+generate alt text, which provides access to many models from many providers
+through a single API key.
 
 ### Setting up your model
 
-**For Gemini models (default):**
+1. Create an OpenRouter API key at https://openrouter.ai/keys.
+2. Export it in your shell:
+
+   ```bash
+   export OPENROUTER_API_KEY=sk-or-...
+   ```
+
+3. Pass an OpenRouter model id of the form `provider/model-slug` to `--model`,
+   for example:
+
+   - `google/gemini-2.5-flash`
+   - `google/gemini-2.5-flash-lite`
+   - `google/gemini-2.5-pro`
+   - `anthropic/claude-sonnet-4.5`
+
+Browse the full catalogue of available model ids at
+https://openrouter.ai/models. Note that only video-capable models (the Google
+Gemini models) can generate alt text for videos.
+
+### Shell completion
+
+Tab-completion is provided through
+[`argcomplete`](https://github.com/kislyuk/argcomplete). Completing the
+`--model` flag suggests live OpenRouter model ids (this needs network access;
+the public model list does not require an API key).
+
+Enable it globally for bash (one-time, then restart your shell):
 
 ```bash
-llm install llm-gemini
-llm keys set gemini # enter API key
-llm -m gemini-flash-latest "Hello, world!"
+activate-global-python-argcomplete
 ```
 
-**For other models:**
+Or enable it per-shell.
 
-1. Install the appropriate llm plugin (e.g., `llm install llm-openai`)
-2. Configure your API key (e.g., `llm keys set openai`)
-3. Use the model name with `--model` flag.
+**bash:**
 
-See the [llm documentation](https://llm.datasette.io/en/stable/setup.html) for setup instructions and the [plugin directory](https://llm.datasette.io/en/stable/plugins/directory.html) for available models.
+```bash
+eval "$(register-python-argcomplete alt-text-llm)"
+```
+
+**zsh:**
+
+```bash
+autoload -U bashcompinit && bashcompinit
+eval "$(register-python-argcomplete alt-text-llm)"
+```
+
+For zsh's native completion system you can instead use
+`register-python-argcomplete --shell zsh alt-text-llm`.
 
 ## Output files
 

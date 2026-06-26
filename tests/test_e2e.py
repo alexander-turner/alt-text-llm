@@ -1,32 +1,31 @@
 """Real, end-to-end tests for the alt-text-llm pipeline.
 
 These tests exercise the REAL pipeline -- scan.build_queue ->
-generate.async_generate_suggestions (which shells out to a fake but real `llm`
-binary via a real subprocess) -> utils.write_output -> apply.apply_captions --
-with no stubbing of production code, no network, and no real LLM.
+generate.async_generate_suggestions -> utils.write_output -> apply.apply_captions
+-- with no stubbing of production code beyond the single OpenRouter network call,
+and no real LLM.
 
 Hermeticity / determinism:
-- A fake ``llm`` executable is placed on PATH (see the ``fake_llm_on_path``
-  fixture in conftest.py) and the executable cache is cleared, so the real
-  ``find_executable``/``subprocess.run`` code path runs.
+- ``openrouter.generate_caption`` is stubbed (see the ``fake_llm_on_path``
+  fixture in conftest.py) so the real ``generate._run_llm`` ->
+  ``_run_llm_async`` -> ``async_generate_suggestions`` code path runs without
+  network or a real model.
 - Assets are real, decodable 1x1 PNGs on disk, so ``download_asset`` resolves
   them locally with no network and no imagemagick/ffmpeg conversion.
 - All paths live under pytest's per-test ``tmp_path``, so the tests are safe
-  under ``-n auto`` (xdist); the only shared global state touched is the
-  executable cache, which the conftest autouse fixture already clears.
+  under ``-n auto`` (xdist).
 """
 
 import asyncio
-import os
 from pathlib import Path
 
 import pytest
 from rich.console import Console
 
-from alt_text_llm import apply, generate, scan, utils
+from alt_text_llm import apply, generate, openrouter, scan, utils
 
 from tests.conftest import FAKE_LLM_CAPTION
-from tests.test_helpers import write_fake_llm, write_real_png
+from tests.test_helpers import write_real_png
 
 
 def _make_options(root: Path, output_path: Path) -> generate.GenerateAltTextOptions:
@@ -217,19 +216,17 @@ def test_dry_run_does_not_mutate(tmp_path: Path, fake_llm_on_path: str):
     assert len(scan.build_queue(root)) == 1
 
 
-def test_per_item_failure_isolation(tmp_path: Path):
-    """One asset failing the fake llm must not abort the batch.
+def test_per_item_failure_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """One asset failing generation must not abort the batch.
 
-    Installs a fake ``llm`` that exits non-zero whenever an argument contains
-    the sentinel substring ``bad`` (which matches the bad asset's filename in
-    the ``-a <attachment>`` arg). The good asset must still produce a
-    suggestion.
+    Stubs ``openrouter.generate_caption`` to raise for any attachment whose
+    filename contains the sentinel substring ``bad``. The good asset must still
+    produce a suggestion.
     """
     root = tmp_path / "project"
     root.mkdir()
-
-    bin_dir = tmp_path / "fake_bin"
-    write_fake_llm(bin_dir, caption=FAKE_LLM_CAPTION, fail_on="bad")
 
     md_path = root / "post.md"
     md_path.write_text(
@@ -239,21 +236,21 @@ def test_per_item_failure_isolation(tmp_path: Path):
     write_real_png(root / "good.png")
     write_real_png(root / "bad.png")
 
-    original_path = os.environ.get("PATH", "")
-    os.environ["PATH"] = f"{bin_dir}{os.pathsep}{original_path}"
-    utils._executable_cache.clear()
-    try:
-        queue = scan.build_queue(root)
-        assert len(queue) == 2
+    def flaky_generate_caption(attachment, prompt, model, timeout):
+        if "bad" in Path(attachment).name:
+            raise openrouter.OpenRouterError("simulated failure")
+        return FAKE_LLM_CAPTION, {"cost": 0.0001}
 
-        output_path = root / "asset_captions.json"
-        options = _make_options(root, output_path)
-        suggestions = asyncio.run(
-            generate.async_generate_suggestions(queue, options)
-        )
-    finally:
-        os.environ["PATH"] = original_path
-        utils._executable_cache.clear()
+    monkeypatch.setattr(openrouter, "generate_caption", flaky_generate_caption)
+
+    queue = scan.build_queue(root)
+    assert len(queue) == 2
+
+    output_path = root / "asset_captions.json"
+    options = _make_options(root, output_path)
+    suggestions = asyncio.run(
+        generate.async_generate_suggestions(queue, options)
+    )
 
     # The bad asset is skipped; the good one still succeeds.
     assert len(suggestions) == 1
