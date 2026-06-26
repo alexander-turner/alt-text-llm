@@ -186,90 +186,75 @@ class TestDisplayManager:
             with pytest.raises(ValueError, match="Cannot open image in tmux"):
                 display_manager.show_image(test_image)
 
-    @pytest.mark.parametrize(
-        "suffix,is_video",
-        [(".jpg", False), (".png", False), (".mp4", True), (".webm", True)],
-    )
-    def test_show_asset_dispatches_by_type(
-        self,
-        display_manager: label.DisplayManager,
-        temp_dir: Path,
-        suffix: str,
-        is_video: bool,
+    def test_render_image_uses_imgcat(
+        self, display_manager: label.DisplayManager, temp_dir: Path
     ) -> None:
-        """show_asset routes videos to show_video and images to show_image."""
-        asset = temp_dir / f"asset{suffix}"
-        asset.write_bytes(b"data")
+        """render() on an image plan displays it via show_image."""
+        image = temp_dir / "asset.jpg"
+        image.write_bytes(b"data")
+        plan = label.DisplayPlan(imgcat_path=image, external_path=None)
+
+        with patch.object(label.DisplayManager, "show_image") as mock_image:
+            display_manager.render(plan)
+
+        mock_image.assert_called_once_with(image)
+
+    def test_render_video_inline(
+        self, display_manager: label.DisplayManager, temp_dir: Path
+    ) -> None:
+        """render() shows the preview GIF and does not open externally."""
+        gif = temp_dir / "preview.gif"
+        gif.write_bytes(b"gif")
+        plan = label.DisplayPlan(
+            imgcat_path=gif, external_path=temp_dir / "clip.mp4"
+        )
 
         with (
-            patch.object(label.DisplayManager, "show_video") as mock_video,
             patch.object(label.DisplayManager, "show_image") as mock_image,
+            patch.object(label.DisplayManager, "_open_externally") as mock_open,
         ):
-            display_manager.show_asset(asset)
+            display_manager.render(plan)
 
-        assert mock_video.called is is_video
-        assert mock_image.called is not is_video
+        mock_image.assert_called_once_with(gif)
+        mock_open.assert_not_called()
 
-    def test_show_video_inline_uses_ffmpeg_and_imgcat(
+    def test_render_falls_back_to_external_when_inline_fails(
         self, display_manager: label.DisplayManager, temp_dir: Path
     ) -> None:
-        """A successful inline preview converts with ffmpeg and shows via imgcat."""
+        """If imgcat fails, render() opens the video externally."""
+        gif = temp_dir / "preview.gif"
         video = temp_dir / "clip.mp4"
-        video.write_bytes(b"fake video")
-
-        with (
-            patch.dict("os.environ", {}, clear=True),  # no TMUX
-            patch.object(
-                utils, "find_executable", return_value="/usr/bin/ffmpeg"
-            ),
-            patch("subprocess.run") as mock_run,
-        ):
-            display_manager.show_video(video)
-
-        commands = [call.args[0] for call in mock_run.call_args_list]
-        # ffmpeg builds the preview gif, then imgcat displays it.
-        assert any(cmd[0] == "/usr/bin/ffmpeg" for cmd in commands)
-        assert any(cmd[0] == "imgcat" for cmd in commands)
-
-    def test_show_video_falls_back_to_external_open(
-        self, display_manager: label.DisplayManager, temp_dir: Path
-    ) -> None:
-        """When ffmpeg is missing, show_video opens the video externally."""
-        video = temp_dir / "clip.mp4"
-        video.write_bytes(b"fake video")
+        plan = label.DisplayPlan(imgcat_path=gif, external_path=video)
 
         with (
             patch.object(
-                utils,
-                "find_executable",
-                side_effect=FileNotFoundError("no ffmpeg"),
+                label.DisplayManager,
+                "show_image",
+                side_effect=ValueError("tmux"),
             ),
             patch.object(label.DisplayManager, "_open_externally") as mock_open,
         ):
-            display_manager.show_video(video)
+            display_manager.render(plan)
 
         mock_open.assert_called_once_with(video)
 
-    def test_show_video_tmux_falls_back_to_external_open(
+    def test_render_external_only(
         self, display_manager: label.DisplayManager, temp_dir: Path
     ) -> None:
-        """Under tmux the inline imgcat path fails, so we open externally."""
+        """A plan with no inline path opens externally directly."""
         video = temp_dir / "clip.mp4"
-        video.write_bytes(b"fake video")
+        plan = label.DisplayPlan(
+            imgcat_path=None, external_path=video, note="tmux"
+        )
 
         with (
-            patch.dict("os.environ", {"TMUX": "1"}),
-            patch.object(
-                utils, "find_executable", return_value="/usr/bin/ffmpeg"
-            ),
-            patch("subprocess.run") as mock_run,
+            patch.object(label.DisplayManager, "show_image") as mock_image,
             patch.object(label.DisplayManager, "_open_externally") as mock_open,
         ):
-            display_manager.show_video(video)
+            display_manager.render(plan)
 
+        mock_image.assert_not_called()
         mock_open.assert_called_once_with(video)
-        # The tmux guard short-circuits before the ffmpeg conversion runs.
-        mock_run.assert_not_called()
 
     @pytest.mark.parametrize(
         "system,expected_prefix",
@@ -304,6 +289,207 @@ class TestDisplayManager:
         assert mock_popen.call_args.args[0] == ["xdg-open", str(video)]
 
 
+# ---------------------------------------------------------------------------
+# Asset preparation (download + preview) and prefetching
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareDisplay:
+    """Test prepare_display, which does the heavy work off the main thread."""
+
+    def _queue_item(self, asset_path: str, temp_dir: Path) -> scan.QueueItem:
+        return scan.QueueItem(
+            markdown_file=str(temp_dir / "test.md"),
+            asset_path=asset_path,
+            line_number=1,
+            context_snippet="ctx",
+        )
+
+    def test_image_plan(self, temp_dir: Path) -> None:
+        """An image is shown inline directly, with no external fallback."""
+        item = self._queue_item("image.jpg", temp_dir)
+
+        def fake_download(queue_item, workspace):
+            f = workspace / "image.jpg"
+            f.write_bytes(b"img")
+            return f
+
+        with patch.object(utils, "download_asset", side_effect=fake_download):
+            plan = label.prepare_display(item, temp_dir)
+
+        assert plan.imgcat_path is not None
+        assert plan.imgcat_path.suffix == ".jpg"
+        assert plan.external_path is None
+
+    def test_video_plan_builds_preview(self, temp_dir: Path) -> None:
+        """A video yields an inline GIF preview plus an external fallback."""
+        item = self._queue_item("clip.mp4", temp_dir)
+
+        def fake_download(queue_item, workspace):
+            f = workspace / "clip.mp4"
+            f.write_bytes(b"vid")
+            return f
+
+        with (
+            patch.dict("os.environ", {}, clear=True),  # no TMUX
+            patch.object(utils, "download_asset", side_effect=fake_download),
+            patch.object(
+                utils, "find_executable", return_value="/usr/bin/ffmpeg"
+            ),
+            patch("subprocess.run") as mock_run,
+        ):
+            plan = label.prepare_display(item, temp_dir)
+
+        # ffmpeg was invoked to build the preview gif.
+        assert any(
+            call.args[0][0] == "/usr/bin/ffmpeg"
+            for call in mock_run.call_args_list
+        )
+        assert plan.imgcat_path is not None
+        assert plan.imgcat_path.suffix == ".gif"
+        assert plan.external_path is not None
+        assert plan.external_path.suffix == ".mp4"
+
+    def test_video_plan_tmux_skips_conversion(self, temp_dir: Path) -> None:
+        """Under tmux we don't convert; the plan opens the video externally."""
+        item = self._queue_item("clip.mp4", temp_dir)
+
+        def fake_download(queue_item, workspace):
+            f = workspace / "clip.mp4"
+            f.write_bytes(b"vid")
+            return f
+
+        with (
+            patch.dict("os.environ", {"TMUX": "1"}),
+            patch.object(utils, "download_asset", side_effect=fake_download),
+            patch("subprocess.run") as mock_run,
+        ):
+            plan = label.prepare_display(item, temp_dir)
+
+        mock_run.assert_not_called()
+        assert plan.imgcat_path is None
+        assert plan.external_path is not None
+        assert plan.note and "tmux" in plan.note
+
+    def test_video_plan_ffmpeg_missing_falls_back(self, temp_dir: Path) -> None:
+        """Missing ffmpeg degrades to an external-open plan with a note."""
+        item = self._queue_item("clip.mp4", temp_dir)
+
+        def fake_download(queue_item, workspace):
+            f = workspace / "clip.mp4"
+            f.write_bytes(b"vid")
+            return f
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch.object(utils, "download_asset", side_effect=fake_download),
+            patch.object(
+                utils,
+                "find_executable",
+                side_effect=FileNotFoundError("no ffmpeg"),
+            ),
+        ):
+            plan = label.prepare_display(item, temp_dir)
+
+        assert plan.imgcat_path is None
+        assert plan.external_path is not None
+        assert plan.note is not None
+
+    def test_download_error_propagates(self, temp_dir: Path) -> None:
+        """Acquisition failures are not swallowed - they propagate to callers."""
+        item = self._queue_item("missing.jpg", temp_dir)
+        with patch.object(
+            utils, "download_asset", side_effect=FileNotFoundError("gone")
+        ):
+            with pytest.raises(FileNotFoundError):
+                label.prepare_display(item, temp_dir)
+
+
+class TestAssetPrefetcher:
+    """Test the background prefetch/buffering of upcoming assets."""
+
+    def _suggestions(self, n: int) -> list[utils.AltGenerationResult]:
+        return [create_alt(i + 1) for i in range(n)]
+
+    def test_get_without_schedule_computes_synchronously(
+        self, temp_dir: Path
+    ) -> None:
+        suggestions = self._suggestions(2)
+        prefetcher = label.AssetPrefetcher(suggestions, temp_dir)
+
+        sentinel = label.DisplayPlan(imgcat_path=None, external_path=None)
+        with patch.object(
+            label, "prepare_display", return_value=sentinel
+        ) as mock_prepare:
+            plan = prefetcher.get(0)
+
+        assert plan is sentinel
+        mock_prepare.assert_called_once()
+        prefetcher.shutdown()
+
+    def test_schedule_then_get_uses_cached_result(self, temp_dir: Path) -> None:
+        """A scheduled item is prepared once; get() reuses that result."""
+        suggestions = self._suggestions(2)
+        prefetcher = label.AssetPrefetcher(suggestions, temp_dir)
+
+        call_count = 0
+
+        def fake_prepare(queue_item, workspace, progress=None):
+            nonlocal call_count
+            call_count += 1
+            return label.DisplayPlan(imgcat_path=None, external_path=None)
+
+        with patch.object(label, "prepare_display", side_effect=fake_prepare):
+            prefetcher.schedule(1)
+            first = prefetcher.get(1)
+            second = prefetcher.get(1)  # cached future, no recompute
+
+        assert first is second or first == second
+        assert call_count == 1
+        prefetcher.shutdown()
+
+    def test_get_reraises_background_error(self, temp_dir: Path) -> None:
+        """An error during background prep is re-raised at get() time."""
+        suggestions = self._suggestions(1)
+        prefetcher = label.AssetPrefetcher(suggestions, temp_dir)
+
+        with patch.object(
+            label, "prepare_display", side_effect=FileNotFoundError("boom")
+        ):
+            prefetcher.schedule(0)
+            with pytest.raises(FileNotFoundError):
+                prefetcher.get(0)
+        prefetcher.shutdown()
+
+    def test_schedule_out_of_range_is_noop(self, temp_dir: Path) -> None:
+        suggestions = self._suggestions(1)
+        prefetcher = label.AssetPrefetcher(suggestions, temp_dir)
+        with patch.object(label, "prepare_display") as mock_prepare:
+            prefetcher.schedule(5)
+            prefetcher.schedule(-1)
+        mock_prepare.assert_not_called()
+        prefetcher.shutdown()
+
+    def test_retain_window_discards_distant_items(self, temp_dir: Path) -> None:
+        """Items far behind the cursor are dropped to bound disk use."""
+        suggestions = self._suggestions(10)
+        prefetcher = label.AssetPrefetcher(suggestions, temp_dir)
+
+        def fake_prepare(queue_item, workspace, progress=None):
+            return label.DisplayPlan(imgcat_path=None, external_path=None)
+
+        with patch.object(label, "prepare_display", side_effect=fake_prepare):
+            for i in range(6):
+                prefetcher.schedule(i)
+                prefetcher.get(i)
+            prefetcher.retain_window(5)
+
+        # KEEP_BEHIND=3, so item 0 (>3 behind index 5) is discarded.
+        assert 0 not in prefetcher._futures
+        assert 5 in prefetcher._futures
+        prefetcher.shutdown()
+
+
 @pytest.mark.parametrize(
     "error_type,error_on,expected_result_count,expected_saved,should_raise",
     [
@@ -336,11 +522,11 @@ def test_label_suggestions_error_handling(
         if should_raise:
             with pytest.raises(error_type):
                 label.label_suggestions(
-                    test_suggestions, Mock(), output_file, skip_existing=False
+                    test_suggestions, Console(), output_file, skip_existing=False
                 )
         else:
             result_count = label.label_suggestions(
-                test_suggestions, Mock(), output_file, skip_existing=False
+                test_suggestions, Console(), output_file, skip_existing=False
             )
             if expected_result_count is not None:
                 assert result_count == expected_result_count
@@ -548,7 +734,7 @@ def test_label_suggestions_sequences(
     call_count = 0
 
     def mock_process_single_suggestion(
-        suggestion_data, display, current=None, total=None
+        suggestion_data, display, prefetcher=None, index=None, current=None, total=None
     ):
         nonlocal call_count
         final = (
@@ -595,7 +781,7 @@ def test_prefill_after_undo(temp_dir: Path) -> None:
     observed_final_alts: list[str | None] = []
 
     def mock_process_single_suggestion(
-        suggestion_data, display, current=None, total=None
+        suggestion_data, display, prefetcher=None, index=None, current=None, total=None
     ):
         nonlocal call_index
         # Record the final_alt that arrives as prefill for this prompt

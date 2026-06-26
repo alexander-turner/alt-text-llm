@@ -124,6 +124,9 @@ alt-text-llm label \
   (missing tools, tmux, or an unsupported terminal), the video opens in your
   default application without stealing focus from the terminal, so you can
   keep editing
+- The next asset is downloaded and its preview built in the background while
+  you label the current one, so advancing is usually instant; a spinner shows
+  progress whenever a download or conversion isn't ready yet
 - Pass `--no-skip-existing` to relabel assets already present in the output file
 
 ### 4. Apply approved captions
