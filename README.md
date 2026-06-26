@@ -71,13 +71,13 @@ Generate alt text suggestions using an LLM:
 ```bash
 alt-text-llm generate \
   --root /path/to/markdown/files \
-  --model google/gemini-2.5-flash \
+  --model google/gemini-3.1-flash-lite \
   --suggestions-file suggested_alts.json
 ```
 
 **Available options:**
 
-- `--model` (required) - OpenRouter model id of the form `provider/model-slug` (e.g., `google/gemini-2.5-flash`, `google/gemini-2.5-flash-lite`, `google/gemini-2.5-pro`, `anthropic/claude-sonnet-4.5`). Browse all available ids at https://openrouter.ai/models.
+- `--model` - OpenRouter model id of the form `provider/model-slug` (default: `google/gemini-3.1-flash-lite`, a cheap, current, video-capable model). Other options: `google/gemini-3-flash-preview` (higher quality), `google/gemini-3.1-flash-lite`, `anthropic/claude-sonnet-4.5` (no video). Browse all available ids at https://openrouter.ai/models.
 - `--root` - Markdown root directory (default: current directory)
 - `--max-chars` - Maximum characters for alt text (default: 300)
 - `--timeout` - LLM timeout in seconds (default: 120)
@@ -99,7 +99,7 @@ total cost reported by OpenRouter per request.
 ```bash
 alt-text-llm generate \
   --root /path/to/markdown/files \
-  --model google/gemini-2.5-flash \
+  --model google/gemini-3.1-flash-lite \
   --estimate-only
 ```
 
@@ -154,13 +154,13 @@ alt-text-llm scan --root ./content
 # 2. Estimate the cost
 alt-text-llm generate \
   --root ./content \
-  --model google/gemini-2.5-flash \
+  --model google/gemini-3.1-flash-lite \
   --estimate-only
 
 # 3. Generate suggestions (if cost is acceptable)
 alt-text-llm generate \
   --root ./content \
-  --model google/gemini-2.5-flash
+  --model google/gemini-3.1-flash-lite
 
 # 4. Review and approve suggestions
 alt-text-llm label
@@ -189,10 +189,10 @@ through a single API key.
 3. Pass an OpenRouter model id of the form `provider/model-slug` to `--model`,
    for example:
 
-   - `google/gemini-2.5-flash`
-   - `google/gemini-2.5-flash-lite`
-   - `google/gemini-2.5-pro`
-   - `anthropic/claude-sonnet-4.5`
+   - `google/gemini-3.1-flash-lite` (default — cheap, current, video-capable)
+   - `google/gemini-3-flash-preview` (higher quality, still cheap)
+   - `google/gemini-2.5-pro` (most expensive)
+   - `anthropic/claude-sonnet-4.5` (strong vision, but no video support)
 
 Browse the full catalogue of available model ids at
 https://openrouter.ai/models. Note that only video-capable models (the Google

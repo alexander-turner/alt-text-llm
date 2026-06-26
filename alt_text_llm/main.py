@@ -16,6 +16,13 @@ from alt_text_llm import apply, generate, label, openrouter, scan, utils
 
 _JSON_INDENT: int = 2
 
+# Default OpenRouter model for `generate`. Chosen as a cheap, current,
+# video-capable vision model: a generation newer than gemini-2.5 and ~6x
+# cheaper than gemini-2.5-pro, while still handling both images and videos
+# (only Google Gemini models can caption videos on OpenRouter). Override with
+# --model for higher quality (e.g. 'google/gemini-3-flash-preview').
+_DEFAULT_MODEL: str = "google/gemini-3.1-flash-lite"
+
 
 class Command(StrEnum):
     """Available commands for alt text workflows."""
@@ -194,8 +201,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     model_arg = generate_parser.add_argument(
         "--model",
-        required=True,
-        help="OpenRouter model id, e.g. 'google/gemini-2.5-flash'",
+        default=_DEFAULT_MODEL,
+        help=f"OpenRouter model id (default: '{_DEFAULT_MODEL}'). "
+        "Only Gemini models can caption videos.",
     )
     # Enables `--model <TAB>` to complete live OpenRouter model ids.
     model_arg.completer = _model_completer  # type: ignore[attr-defined]

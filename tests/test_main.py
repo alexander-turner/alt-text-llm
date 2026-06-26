@@ -28,6 +28,13 @@ def test_build_parser_subcommands() -> None:
     assert args.model == "google/gemini-2.5-flash"
 
 
+def test_generate_model_defaults_when_omitted() -> None:
+    """`generate` no longer requires --model; it falls back to the default."""
+    parser = main._build_parser()
+    args = parser.parse_args(["generate"])
+    assert args.model == main._DEFAULT_MODEL
+
+
 def test_generate_model_argument_has_completer() -> None:
     """The --model action must expose the OpenRouter completer for argcomplete."""
     parser = main._build_parser()
