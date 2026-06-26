@@ -16,13 +16,13 @@ from alt_text_llm import apply, generate, label, openrouter, scan, utils
 
 _JSON_INDENT: int = 2
 
-# Default OpenRouter model for `generate`. A cheap, video-capable vision model
-# (~4x cheaper than gemini-2.5-pro) that handles both images and videos (only
-# Google Gemini models can caption videos on OpenRouter). Override with
-# --model — e.g. 'google/gemini-2.5-flash-lite' (cheapest) or
-# 'google/gemini-2.5-pro' (highest quality). Model ids must be the full
-# 'provider/slug' form; a bare slug yields "Unknown model" from OpenRouter.
-_DEFAULT_MODEL: str = "google/gemini-2.5-flash"
+# Default OpenRouter model for `generate`. A cheap, current, video-capable
+# vision model (~6x cheaper than gemini-2.5-pro) that handles both images and
+# videos (only Google Gemini models can caption videos on OpenRouter). Override
+# with --model — e.g. 'google/gemini-3-flash-preview' (higher quality) or
+# 'google/gemini-2.5-pro'. Model ids must be the full 'provider/slug' form;
+# a bare slug yields "Unknown model" from OpenRouter.
+_DEFAULT_MODEL: str = "google/gemini-3.1-flash-lite"
 
 
 class Command(StrEnum):
