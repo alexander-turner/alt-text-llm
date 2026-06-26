@@ -65,6 +65,10 @@ jobs:
         with:
           # No API token needed - uses OIDC trusted publishing
           verbose: true
+          # Treat an already-present version as success rather than a 400, so a
+          # release race (two pushes in quick succession) can't hard-fail the
+          # run. The version computation already avoids this; this is a backstop.
+          skip-existing: true
 
       - name: Commit version bump, tag, and create GitHub Release
         if: steps.bump.outputs.should_publish == 'true'

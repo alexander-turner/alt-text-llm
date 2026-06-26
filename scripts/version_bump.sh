@@ -54,16 +54,30 @@ determine_bump() {
 PACKAGE_NAME=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['name'])")
 COMMITTED_VERSION=$(grep -E '^__version__' "$VERSION_FILE" | sed -E 's/.*"([^"]+)".*/\1/')
 
-# Current version: prefer PyPI (the published source of truth); fall back to the
-# committed __version__ when the package is new or PyPI is unreachable.
+# Current version: the highest of PyPI's latest, the latest release tag, and
+# the committed __version__.
+#
+# Using the MAX (not just PyPI) is essential: PyPI's JSON API lags behind
+# uploads (Fastly CDN), so when two releases land back-to-back the second run
+# can still read the pre-first-release version from PyPI and recompute a
+# version that was *just* published — which then fails upload with
+# "400 File already exists". The git tag created at release time does not lag,
+# so folding it into the base prevents that race.
 PYPI_JSON=$(curl -fsS "https://pypi.org/pypi/${PACKAGE_NAME}/json" 2>/dev/null || echo "")
+PYPI_VERSION=""
 if [ -n "$PYPI_JSON" ]; then
-  CURRENT_VERSION=$(echo "$PYPI_JSON" | python -c "import json,sys; print(json.load(sys.stdin)['info']['version'])")
-  log "Current PyPI version: $CURRENT_VERSION"
+  PYPI_VERSION=$(echo "$PYPI_JSON" | python -c "import json,sys; print(json.load(sys.stdin)['info']['version'])")
+  log "Latest PyPI version: ${PYPI_VERSION:-<none>}"
 else
-  CURRENT_VERSION="$COMMITTED_VERSION"
-  log "PyPI unreachable or package unpublished; basing off committed version: $CURRENT_VERSION"
+  log "PyPI unreachable or package unpublished."
 fi
+LATEST_TAG_VERSION=$(git tag --list 'v*' | sed 's/^v//' \
+  | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+log "Latest release tag version: ${LATEST_TAG_VERSION:-<none>}"
+CURRENT_VERSION=$(printf '%s\n%s\n%s\n' \
+  "$PYPI_VERSION" "$LATEST_TAG_VERSION" "$COMMITTED_VERSION" \
+  | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+log "Basing next version on: $CURRENT_VERSION"
 
 # Determine which commits to analyze, from the last release tag (vX.Y.Z).
 LAST_TAG=$(git describe --tags --match "v*" --abbrev=0 HEAD 2>/dev/null || echo "")
