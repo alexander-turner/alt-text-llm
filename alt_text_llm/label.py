@@ -2,6 +2,7 @@
 
 import json
 import os
+import platform
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -95,6 +96,17 @@ class DisplayManager:
             )
         )
 
+    def show_asset(self, path: Path) -> None:
+        """Display an image or video asset in the terminal.
+
+        Videos are previewed inline when possible (see ``show_video``); still
+        images are rendered with imgcat.
+        """
+        if utils.is_video_asset(str(path)):
+            self.show_video(path)
+        else:
+            self.show_image(path)
+
     def show_image(self, path: Path) -> None:
         """Display the image using imgcat."""
         if "TMUX" in os.environ:
@@ -105,6 +117,97 @@ class DisplayManager:
             raise ValueError(
                 f"Failed to open image: {err}; is imgcat installed?"
             ) from err
+
+    def show_video(self, path: Path) -> None:
+        """Preview a video inline if possible, else open it externally.
+
+        Most terminals cannot render an mp4/webm directly, so we extract a
+        short, downscaled animated preview with ffmpeg and display it with
+        imgcat (which loops animated GIFs inline). When that is not possible -
+        ffmpeg/imgcat missing, conversion failure, tmux, or an unsupported
+        terminal - we fall back to the operating system's default opener,
+        launched so that focus stays on the terminal and labeling can
+        continue uninterrupted.
+        """
+        try:
+            self._show_video_inline(path)
+        except Exception as err:  # noqa: BLE001 - inline preview is best-effort
+            self.console.print(
+                f"[yellow]Could not preview video inline ({err}); "
+                "opening externally[/yellow]"
+            )
+            self._open_externally(path)
+
+    def _show_video_inline(self, path: Path) -> None:
+        """Render a short animated preview of *path* inline via imgcat.
+
+        Raises an exception (caught by ``show_video``) when the preview cannot
+        be produced or displayed.
+        """
+        ffmpeg = utils.find_executable("ffmpeg")
+        with TemporaryDirectory() as temp_dir:
+            preview = Path(temp_dir) / "preview.gif"
+            try:
+                subprocess.run(
+                    [
+                        ffmpeg,
+                        "-y",
+                        # Limit to the first few seconds so the preview stays
+                        # small and quick to generate.
+                        "-t",
+                        "5",
+                        "-i",
+                        str(path),
+                        "-vf",
+                        "fps=10,scale=480:-2:flags=lanczos",
+                        "-loop",
+                        "0",
+                        str(preview),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as err:
+                raise ValueError(
+                    f"Failed to build video preview: {err}"
+                ) from err
+            # Reuse show_image so the inline display path (tmux guard, imgcat
+            # invocation, error handling) stays in one place.
+            self.show_image(preview)
+
+    def _open_externally(self, path: Path) -> None:
+        """Open *path* with the OS default application without stealing focus.
+
+        Uses a non-blocking, detached launch so the labeling prompt keeps
+        terminal focus. On macOS ``open -g`` opens in the background; other
+        platforms have no portable background flag, but their openers return
+        immediately and leave the terminal in the foreground.
+        """
+        opener = self._external_open_command(path)
+        try:
+            subprocess.Popen(
+                opener,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except (FileNotFoundError, OSError) as err:
+            self.console.print(
+                f"[yellow]Could not open video externally: {err}[/yellow]"
+            )
+
+    @staticmethod
+    def _external_open_command(path: Path) -> list[str]:
+        """Build the platform-specific command to open *path* externally."""
+        system = platform.system()
+        if system == "Darwin":
+            # -g keeps the launched app in the background so the terminal
+            # retains focus.
+            return ["open", "-g", str(path)]
+        if system == "Windows":
+            return ["cmd", "/c", "start", "", str(path)]
+        return ["xdg-open", str(path)]
 
     def show_progress(self, current: int, total: int) -> None:
         """Display progress information."""
@@ -207,13 +310,13 @@ def _process_single_suggestion_for_labeling(
         # Display results
         display.show_rule(queue_item.asset_path)
         display.show_context(queue_item)
-        # Image display can fail (tmux, missing imgcat, etc.); never let that
+        # Asset display can fail (tmux, missing imgcat, etc.); never let that
         # crash the labeling session - the user can still edit alt text.
         try:
-            display.show_image(attachment)
+            display.show_asset(attachment)
         except Exception as err:  # noqa: BLE001 - display is best-effort
             display.console.print(
-                f"[yellow]Could not display image: {err}; continuing[/yellow]"
+                f"[yellow]Could not display asset: {err}; continuing[/yellow]"
             )
 
         # Allow user to edit the suggestion

@@ -186,6 +186,121 @@ class TestDisplayManager:
             with pytest.raises(ValueError, match="Cannot open image in tmux"):
                 display_manager.show_image(test_image)
 
+    @pytest.mark.parametrize(
+        "suffix,is_video",
+        [(".jpg", False), (".png", False), (".mp4", True), (".webm", True)],
+    )
+    def test_show_asset_dispatches_by_type(
+        self,
+        display_manager: label.DisplayManager,
+        temp_dir: Path,
+        suffix: str,
+        is_video: bool,
+    ) -> None:
+        """show_asset routes videos to show_video and images to show_image."""
+        asset = temp_dir / f"asset{suffix}"
+        asset.write_bytes(b"data")
+
+        with (
+            patch.object(label.DisplayManager, "show_video") as mock_video,
+            patch.object(label.DisplayManager, "show_image") as mock_image,
+        ):
+            display_manager.show_asset(asset)
+
+        assert mock_video.called is is_video
+        assert mock_image.called is not is_video
+
+    def test_show_video_inline_uses_ffmpeg_and_imgcat(
+        self, display_manager: label.DisplayManager, temp_dir: Path
+    ) -> None:
+        """A successful inline preview converts with ffmpeg and shows via imgcat."""
+        video = temp_dir / "clip.mp4"
+        video.write_bytes(b"fake video")
+
+        with (
+            patch.dict("os.environ", {}, clear=True),  # no TMUX
+            patch.object(
+                utils, "find_executable", return_value="/usr/bin/ffmpeg"
+            ),
+            patch("subprocess.run") as mock_run,
+        ):
+            display_manager.show_video(video)
+
+        commands = [call.args[0] for call in mock_run.call_args_list]
+        # ffmpeg builds the preview gif, then imgcat displays it.
+        assert any(cmd[0] == "/usr/bin/ffmpeg" for cmd in commands)
+        assert any(cmd[0] == "imgcat" for cmd in commands)
+
+    def test_show_video_falls_back_to_external_open(
+        self, display_manager: label.DisplayManager, temp_dir: Path
+    ) -> None:
+        """When ffmpeg is missing, show_video opens the video externally."""
+        video = temp_dir / "clip.mp4"
+        video.write_bytes(b"fake video")
+
+        with (
+            patch.object(
+                utils,
+                "find_executable",
+                side_effect=FileNotFoundError("no ffmpeg"),
+            ),
+            patch.object(label.DisplayManager, "_open_externally") as mock_open,
+        ):
+            display_manager.show_video(video)
+
+        mock_open.assert_called_once_with(video)
+
+    def test_show_video_tmux_falls_back_to_external_open(
+        self, display_manager: label.DisplayManager, temp_dir: Path
+    ) -> None:
+        """Under tmux the inline imgcat path fails, so we open externally."""
+        video = temp_dir / "clip.mp4"
+        video.write_bytes(b"fake video")
+
+        with (
+            patch.dict("os.environ", {"TMUX": "1"}),
+            patch.object(
+                utils, "find_executable", return_value="/usr/bin/ffmpeg"
+            ),
+            patch("subprocess.run"),  # ffmpeg "succeeds"; show_image still rejects tmux
+            patch.object(label.DisplayManager, "_open_externally") as mock_open,
+        ):
+            display_manager.show_video(video)
+
+        mock_open.assert_called_once_with(video)
+
+    @pytest.mark.parametrize(
+        "system,expected_prefix",
+        [
+            ("Darwin", ["open", "-g"]),
+            ("Linux", ["xdg-open"]),
+            ("Windows", ["cmd", "/c", "start", ""]),
+        ],
+    )
+    def test_external_open_command_per_platform(
+        self, system: str, expected_prefix: list[str]
+    ) -> None:
+        """The external opener is platform-appropriate and keeps terminal focus."""
+        path = Path("/tmp/clip.mp4")
+        with patch("platform.system", return_value=system):
+            command = label.DisplayManager._external_open_command(path)
+        assert command[: len(expected_prefix)] == expected_prefix
+        assert command[-1] == str(path)
+
+    def test_open_externally_is_non_blocking(
+        self, display_manager: label.DisplayManager
+    ) -> None:
+        """_open_externally launches detached via Popen (does not block)."""
+        video = Path("/tmp/clip.mp4")
+        with (
+            patch("platform.system", return_value="Linux"),
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            display_manager._open_externally(video)
+
+        mock_popen.assert_called_once()
+        assert mock_popen.call_args.args[0] == ["xdg-open", str(video)]
+
 
 @pytest.mark.parametrize(
     "error_type,error_on,expected_result_count,expected_saved,should_raise",
