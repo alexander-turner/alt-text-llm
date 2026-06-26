@@ -6,7 +6,7 @@ AI-powered alt text generation and labeling tools for markdown content. Original
 
 - **Intelligent scanning** - Detects images/videos missing meaningful alt text (ignores empty `alt=""`)
 - **AI-powered generation** - Uses LLM of your choice to create context-aware alt text suggestions
-- **Interactive labeling** - Manually review and edit LLM suggestions. Images display directly in your terminal
+- **Interactive labeling** - Manually review and edit LLM suggestions. Images (and inline video previews) display directly in your terminal
 - **Automatic application** - Apply approved captions back to your markdown files
 
 ![A labeled example of the labeling pipeline: 1) view the context for an image, 2) view the image itself, while 3) editing the AI-generated label suggestion.](https://raw.githubusercontent.com/alexander-turner/alt-text-llm/main/image.png)
@@ -119,6 +119,14 @@ alt-text-llm label \
 - Press Enter to accept the suggestion as-is
 - Submit `undo` or `u` to go back to the previous item
 - Images display in your terminal (requires `imgcat`)
+- Videos (`.mp4`, `.webm`, etc.) preview inline as a short animated clip
+  (requires `ffmpeg` and `imgcat`). When an inline preview isn't possible
+  (missing tools, tmux, or an unsupported terminal), the video opens in your
+  default application without stealing focus from the terminal, so you can
+  keep editing
+- The next asset is downloaded and its preview built in the background while
+  you label the current one, so advancing is usually instant; a spinner shows
+  progress whenever a download or conversion isn't ready yet
 - Pass `--no-skip-existing` to relabel assets already present in the output file
 
 ### 4. Apply approved captions

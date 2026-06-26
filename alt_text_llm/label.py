@@ -2,11 +2,14 @@
 
 import json
 import os
+import platform
+import shutil
 import subprocess
-from dataclasses import replace
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Sequence
+from typing import Callable, Optional, Sequence
 import sys
 
 import requests
@@ -21,6 +24,183 @@ from alt_text_llm import generate, scan, utils
 UNDO_REQUESTED = "UNDO_REQUESTED"
 QUIT_REQUESTED = "QUIT_REQUESTED"
 SKIP_REQUESTED = "SKIP_REQUESTED"
+
+# Callback used to report preparation progress (e.g. to a spinner).
+ProgressCallback = Callable[[str], None]
+
+
+@dataclass(slots=True)
+class DisplayPlan:
+    """How to display a prepared asset, with all heavy work already done.
+
+    ``imgcat_path`` is the file to render inline with imgcat (the image itself,
+    or a generated video-preview GIF). ``external_path`` is the original video
+    to open in an external player when inline display is impossible or fails.
+    ``note`` is an optional message to surface to the user.
+    """
+
+    imgcat_path: Optional[Path]
+    external_path: Optional[Path]
+    note: Optional[str] = None
+
+
+def _queue_item_for(
+    suggestion: utils.AltGenerationResult,
+) -> "scan.QueueItem":
+    """Rebuild the scan.QueueItem a suggestion was generated from."""
+    return scan.QueueItem(
+        markdown_file=suggestion.markdown_file,
+        asset_path=suggestion.asset_path,
+        line_number=suggestion.line_number or 1,
+        context_snippet=suggestion.context_snippet,
+    )
+
+
+def _build_video_preview(video_path: Path, workspace: Path) -> Path:
+    """Render a short, downscaled animated GIF preview of *video_path*.
+
+    Only the first few seconds are sampled so the preview stays small and
+    quick to build. Raises ValueError (caught by callers) on failure.
+    """
+    ffmpeg = utils.find_executable("ffmpeg")
+    preview = workspace / "preview.gif"
+    try:
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                # Input-side -t only decodes the first 5s, keeping it fast.
+                "-t",
+                "5",
+                "-i",
+                str(video_path),
+                "-vf",
+                "fps=10,scale=480:-2:flags=lanczos",
+                "-loop",
+                "0",
+                str(preview),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as err:
+        raise ValueError(f"Failed to build video preview: {err}") from err
+    return preview
+
+
+def prepare_display(
+    queue_item: "scan.QueueItem",
+    workspace: Path,
+    progress: Optional[ProgressCallback] = None,
+) -> DisplayPlan:
+    """Download *queue_item*'s asset and pre-render anything needed to show it.
+
+    This does all the slow work (network download, ffmpeg conversion) and is
+    safe to run off the main thread so the next asset can be buffered while the
+    user labels the current one. Display errors are folded into the returned
+    plan; only genuine acquisition failures (missing file, network) propagate.
+    """
+    if progress is not None:
+        progress("Downloading asset…")
+    asset = utils.download_asset(queue_item, workspace)
+
+    if not utils.is_video_asset(str(asset)):
+        return DisplayPlan(imgcat_path=asset, external_path=None)
+
+    # imgcat's inline protocol can't render under tmux, so skip the (slow)
+    # conversion entirely and arrange to open the video externally instead.
+    if "TMUX" in os.environ:
+        return DisplayPlan(
+            imgcat_path=None,
+            external_path=asset,
+            note="Cannot preview video inline in tmux; opening externally",
+        )
+
+    try:
+        if progress is not None:
+            progress("Building video preview…")
+        gif = _build_video_preview(asset, workspace)
+    except Exception as err:  # noqa: BLE001 - inline preview is best-effort
+        return DisplayPlan(
+            imgcat_path=None,
+            external_path=asset,
+            note=f"Could not preview video inline ({err}); opening externally",
+        )
+    return DisplayPlan(imgcat_path=gif, external_path=asset)
+
+
+class AssetPrefetcher:
+    """Downloads and pre-renders upcoming assets on a background thread.
+
+    Each suggestion index gets its own workspace subdirectory so prepared
+    assets can coexist. A single worker keeps at most one download/conversion
+    in flight, and a sliding window bounds disk use while still letting recent
+    items be re-shown instantly after an undo.
+    """
+
+    _KEEP_BEHIND = 3
+
+    def __init__(
+        self,
+        suggestions: Sequence[utils.AltGenerationResult],
+        workspace_root: Path,
+    ) -> None:
+        self._suggestions = suggestions
+        self._root = workspace_root
+        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._futures: dict[int, "Future[DisplayPlan]"] = {}
+
+    def _workspace_for(self, index: int) -> Path:
+        workspace = self._root / f"item-{index}"
+        workspace.mkdir(parents=True, exist_ok=True)
+        return workspace
+
+    def schedule(self, index: int) -> None:
+        """Begin preparing the asset at *index* in the background, if valid."""
+        if not (0 <= index < len(self._suggestions)):
+            return
+        if index in self._futures:
+            return
+        queue_item = _queue_item_for(self._suggestions[index])
+        workspace = self._workspace_for(index)
+        self._futures[index] = self._executor.submit(
+            prepare_display, queue_item, workspace
+        )
+
+    def get(
+        self, index: int, on_status: Optional[ProgressCallback] = None
+    ) -> DisplayPlan:
+        """Return the prepared plan for *index*, computing it if not buffered.
+
+        Re-raises any acquisition error stored by the background worker so the
+        labeling loop's existing error handling still applies.
+        """
+        future = self._futures.get(index)
+        if future is None:
+            queue_item = _queue_item_for(self._suggestions[index])
+            workspace = self._workspace_for(index)
+            return prepare_display(queue_item, workspace, progress=on_status)
+        if on_status is not None and not future.done():
+            on_status("Preparing preview…")
+        return future.result()
+
+    def retain_window(self, index: int) -> None:
+        """Drop buffered items far from *index* to bound disk usage."""
+        low, high = index - self._KEEP_BEHIND, index + 1
+        for stale in [i for i in self._futures if i < low or i > high]:
+            self._discard(stale)
+
+    def _discard(self, index: int) -> None:
+        future = self._futures.pop(index, None)
+        if future is not None:
+            future.cancel()
+        shutil.rmtree(self._root / f"item-{index}", ignore_errors=True)
+
+    def shutdown(self) -> None:
+        """Cancel pending work and stop the background worker."""
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 class LabelingQuit(Exception):
@@ -95,6 +275,34 @@ class DisplayManager:
             )
         )
 
+    def render(self, plan: DisplayPlan) -> None:
+        """Display a prepared asset: inline via imgcat, else open externally.
+
+        All heavy work happened in ``prepare_display``; this only performs the
+        terminal I/O. Display failures are best-effort and never raise.
+        """
+        if plan.note:
+            self.console.print(f"[yellow]{plan.note}[/yellow]")
+
+        if plan.imgcat_path is not None:
+            try:
+                self.show_image(plan.imgcat_path)
+                return
+            except Exception as err:  # noqa: BLE001 - display is best-effort
+                if plan.external_path is None:
+                    self.console.print(
+                        f"[yellow]Could not display asset: {err}; "
+                        "continuing[/yellow]"
+                    )
+                    return
+                self.console.print(
+                    f"[yellow]Could not preview inline ({err}); "
+                    "opening externally[/yellow]"
+                )
+
+        if plan.external_path is not None:
+            self._open_externally(plan.external_path)
+
     def show_image(self, path: Path) -> None:
         """Display the image using imgcat."""
         if "TMUX" in os.environ:
@@ -105,6 +313,38 @@ class DisplayManager:
             raise ValueError(
                 f"Failed to open image: {err}; is imgcat installed?"
             ) from err
+
+    def _open_externally(self, path: Path) -> None:
+        """Open *path* with the OS default application without stealing focus.
+
+        Uses a non-blocking, detached launch so the labeling prompt keeps
+        terminal focus. On macOS ``open -g`` opens in the background; other
+        platforms have no portable background flag, but their openers return
+        immediately and leave the terminal in the foreground.
+        """
+        opener = self._external_open_command(path)
+        try:
+            subprocess.Popen(
+                opener,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except (FileNotFoundError, OSError) as err:
+            self.console.print(
+                f"[yellow]Could not open video externally: {err}[/yellow]"
+            )
+
+    @staticmethod
+    def _external_open_command(path: Path) -> list[str]:
+        """Build the platform-specific command to open *path* externally."""
+        system = platform.system()
+        if system == "Darwin":
+            # -g keeps the launched app in the background so the terminal
+            # retains focus.
+            return ["open", "-g", str(path)]
+        if system == "Windows":
+            return ["cmd", "/c", "start", "", str(path)]
+        return ["xdg-open", str(path)]
 
     def show_progress(self, current: int, total: int) -> None:
         """Display progress information."""
@@ -188,45 +428,42 @@ class DisplayManager:
 def _process_single_suggestion_for_labeling(
     suggestion_data: utils.AltGenerationResult,
     display: DisplayManager,
+    prefetcher: "AssetPrefetcher",
+    index: int,
     current: int | None = None,
     total: int | None = None,
 ) -> utils.AltGenerationResult:
-    # Recreate queue item for display
-    queue_item = scan.QueueItem(
-        markdown_file=suggestion_data.markdown_file,
-        asset_path=suggestion_data.asset_path,
-        line_number=suggestion_data.line_number or 1,
-        context_snippet=suggestion_data.context_snippet,
-    )
+    queue_item = _queue_item_for(suggestion_data)
+    console = display.console
 
-    # Download asset for display
-    with TemporaryDirectory() as temp_dir:
-        workspace = Path(temp_dir)
-        attachment = utils.download_asset(queue_item, workspace)
-
-        # Display results
-        display.show_rule(queue_item.asset_path)
-        display.show_context(queue_item)
-        # Image display can fail (tmux, missing imgcat, etc.); never let that
-        # crash the labeling session - the user can still edit alt text.
-        try:
-            display.show_image(attachment)
-        except Exception as err:  # noqa: BLE001 - display is best-effort
-            display.console.print(
-                f"[yellow]Could not display image: {err}; continuing[/yellow]"
-            )
-
-        # Allow user to edit the suggestion
-        prefill_text = (
-            suggestion_data.final_alt
-            if suggestion_data.final_alt is not None
-            else suggestion_data.suggested_alt
+    # Acquire the (possibly pre-buffered) asset. A spinner reports progress
+    # whenever the main thread has to wait - the first item, a deep undo, or a
+    # background prepare that hasn't finished yet.
+    with console.status("[bold]Preparing asset…") as status:
+        plan = prefetcher.get(
+            index, on_status=lambda msg: status.update(f"[bold]{msg}")
         )
-        final_alt = prefill_text
-        if sys.stdout.isatty():
-            final_alt = display.prompt_for_edit(prefill_text, current, total)
 
-        return replace(suggestion_data, final_alt=final_alt)
+    # Start buffering the next asset while the user edits this one, and free
+    # assets we've moved well past.
+    prefetcher.schedule(index + 1)
+    prefetcher.retain_window(index)
+
+    display.show_rule(queue_item.asset_path)
+    display.show_context(queue_item)
+    display.render(plan)
+
+    # Allow user to edit the suggestion
+    prefill_text = (
+        suggestion_data.final_alt
+        if suggestion_data.final_alt is not None
+        else suggestion_data.suggested_alt
+    )
+    final_alt = prefill_text
+    if sys.stdout.isatty():
+        final_alt = display.prompt_for_edit(prefill_text, current, total)
+
+    return replace(suggestion_data, final_alt=final_alt)
 
 
 def _handle_undo_request(
@@ -258,6 +495,7 @@ def _process_labeling_loop(
     session: LabelingSession,
     display: DisplayManager,
     console: Console,
+    prefetcher: "AssetPrefetcher",
 ) -> None:
     """Process all suggestions in the labeling session."""
     while not session.is_complete():
@@ -267,8 +505,14 @@ def _process_labeling_loop(
 
         try:
             current, total = session.get_progress()
+            index = session.current_index
             result = _process_single_suggestion_for_labeling(
-                current_suggestion, display, current=current, total=total
+                current_suggestion,
+                display,
+                prefetcher,
+                index,
+                current=current,
+                total=total,
             )
 
             if result.final_alt == UNDO_REQUESTED:
@@ -323,19 +567,24 @@ def label_suggestions(
     session = LabelingSession(suggestions_to_process)
     display = DisplayManager(console, vi_mode=vi_mode)
 
-    try:
-        _process_labeling_loop(session, display, console)
-    except (KeyboardInterrupt, LabelingQuit):
-        console.print("\n[yellow]Saving progress...[/yellow]")
-    finally:
-        if session.processed_results:
-            # Always append so prior labels are never lost.
-            utils.write_output(
-                session.processed_results, output_path, append_mode=True
-            )
-            console.print(
-                f"[green]Saved {len(session.processed_results)} results to {output_path}[/green]"
-            )
+    # A session-scoped workspace lets the prefetcher buffer the next asset
+    # before the current item's temp dir would otherwise be torn down.
+    with TemporaryDirectory(prefix="alt-text-llm-") as temp_root:
+        prefetcher = AssetPrefetcher(session.suggestions, Path(temp_root))
+        try:
+            _process_labeling_loop(session, display, console, prefetcher)
+        except (KeyboardInterrupt, LabelingQuit):
+            console.print("\n[yellow]Saving progress...[/yellow]")
+        finally:
+            prefetcher.shutdown()
+            if session.processed_results:
+                # Always append so prior labels are never lost.
+                utils.write_output(
+                    session.processed_results, output_path, append_mode=True
+                )
+                console.print(
+                    f"[green]Saved {len(session.processed_results)} results to {output_path}[/green]"
+                )
 
     return len(session.processed_results)
 
