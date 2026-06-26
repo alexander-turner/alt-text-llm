@@ -144,6 +144,10 @@ class DisplayManager:
         Raises an exception (caught by ``show_video``) when the preview cannot
         be produced or displayed.
         """
+        # imgcat's inline protocol can't render under tmux, so bail before
+        # paying for the ffmpeg conversion - show_video then opens externally.
+        if "TMUX" in os.environ:
+            raise ValueError("Cannot preview video inline in tmux")
         ffmpeg = utils.find_executable("ffmpeg")
         with TemporaryDirectory() as temp_dir:
             preview = Path(temp_dir) / "preview.gif"

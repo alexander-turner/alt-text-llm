@@ -262,12 +262,14 @@ class TestDisplayManager:
             patch.object(
                 utils, "find_executable", return_value="/usr/bin/ffmpeg"
             ),
-            patch("subprocess.run"),  # ffmpeg "succeeds"; show_image still rejects tmux
+            patch("subprocess.run") as mock_run,
             patch.object(label.DisplayManager, "_open_externally") as mock_open,
         ):
             display_manager.show_video(video)
 
         mock_open.assert_called_once_with(video)
+        # The tmux guard short-circuits before the ffmpeg conversion runs.
+        mock_run.assert_not_called()
 
     @pytest.mark.parametrize(
         "system,expected_prefix",
