@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Sequence, TypeVar
 
 from rich.console import Console
-from rich.progress import Progress
+from rich.progress import Progress, SpinnerColumn, TimeElapsedColumn
 
 from alt_text_llm import openrouter, scan, utils
 
@@ -108,6 +108,7 @@ async def _run_llm_async(
     queue_item: "scan.QueueItem",
     options: GenerateAltTextOptions,
     sem: asyncio.Semaphore,
+    progress: Progress,
 ) -> tuple[int, utils.AltGenerationResult, float | None]:
     """Download asset, run LLM in a thread; clean up; return suggestion payload.
 
@@ -119,6 +120,10 @@ async def _run_llm_async(
     # spawn thousands of temp directories upfront (all tasks are created
     # eagerly). Only up to _CONCURRENCY_LIMIT workspaces exist at once.
     async with sem:
+        # Log when an item actually starts (i.e. acquires a concurrency slot),
+        # so the run shows visible movement even while the first slow uploads
+        # (e.g. large videos) are still in flight and the bar sits at 0.
+        progress.console.print(f"[dim]→ {queue_item.asset_path}[/dim]")
         workspace = Path(tempfile.mkdtemp())
         try:
             attachment = await asyncio.to_thread(
@@ -158,17 +163,25 @@ async def async_generate_suggestions(
         return []
 
     sem = asyncio.Semaphore(_CONCURRENCY_LIMIT)
-    tasks = [
-        asyncio.create_task(_run_llm_async(index, qi, options, sem))
-        for index, qi in enumerate(queue_items)
-    ]
 
     # Collect by original index so output order is deterministic (matches input
     # order) regardless of completion order. Failed/skipped items are omitted.
     completed: dict[int, utils.AltGenerationResult] = {}
     total_cost = 0.0
-    with Progress() as progress:
-        task_id = progress.add_task("Generating alt text", total=len(tasks))
+    # SpinnerColumn keeps the display visibly alive while the first (often slow,
+    # e.g. video) requests are still in flight and the bar is stuck at 0.
+    with Progress(
+        SpinnerColumn(),
+        *Progress.get_default_columns(),
+        TimeElapsedColumn(),
+    ) as progress:
+        task_id = progress.add_task("Generating alt text", total=len(queue_items))
+        # Tasks are created inside the Progress block so each can log its start
+        # through the live display without clobbering the bar.
+        tasks = [
+            asyncio.create_task(_run_llm_async(index, qi, options, sem, progress))
+            for index, qi in enumerate(queue_items)
+        ]
         try:
             for finished in asyncio.as_completed(tasks):
                 try:

@@ -59,6 +59,48 @@ def _scan_command(args: argparse.Namespace) -> None:
     print(f"Wrote {len(queue_items)} queue item(s) to {output_path}")
 
 
+def _suggest_model_id(model: str, known: list[str]) -> str | None:
+    """Suggest a catalogue id for a likely-mistyped *model*.
+
+    The common mistake is a bare slug missing its ``provider/`` prefix
+    (e.g. ``gemini-2.5-flash`` instead of ``google/gemini-2.5-flash``), which
+    OpenRouter rejects at generation time with "Unknown model". Returns the
+    prefixed id when one exists, else ``None``.
+    """
+    if "/" in model:
+        return None
+    prefixed = f"google/{model}"
+    if prefixed in known:
+        return prefixed
+    matches = [m for m in known if m.split("/", 1)[-1] == model]
+    return matches[0] if matches else None
+
+
+def _model_is_usable(model: str, console: Console) -> bool:
+    """Return whether *model* should be used, aborting early on a bad id.
+
+    Validates against OpenRouter's live catalogue so an invalid id fails fast
+    with a fix-it hint, instead of letting every queue item error one-by-one
+    mid-run. When the catalogue is unreachable (empty list), validation is
+    skipped and generation proceeds.
+    """
+    known = openrouter.list_model_ids()
+    if not known or model in known:
+        return True
+    suggestion = _suggest_model_id(model, known)
+    if suggestion:
+        hint = f" Did you mean '{suggestion}'?"
+    else:
+        hint = (
+            " Model ids look like 'google/gemini-2.5-flash'; browse "
+            "https://openrouter.ai/models or tab-complete --model."
+        )
+    console.print(
+        f"[red]'{model}' is not a valid OpenRouter model id.{hint}[/red]"
+    )
+    return False
+
+
 def _generate_command(args: argparse.Namespace) -> None:
     """Execute the generate sub-command."""
     opts = generate.GenerateAltTextOptions(
@@ -74,16 +116,23 @@ def _generate_command(args: argparse.Namespace) -> None:
     console = Console()
     _validate_root(opts.root, console)
 
-    # Fail fast (before scanning/generating) if the key is missing, unless we
-    # are only estimating cost — the public model catalogue needs no key.
+    # Fail fast (before scanning/generating) if the key is missing or the model
+    # id is invalid, unless we are only estimating cost — the public model
+    # catalogue needs no key, and estimate-only already reports unpriceable
+    # models via the cost line. Validating the model here means a bad id (e.g.
+    # a bare slug missing its `provider/` prefix) aborts immediately with a
+    # suggestion instead of failing every queue item one-by-one mid-run.
     if not args.estimate_only:
         try:
             openrouter.get_api_key()
         except openrouter.OpenRouterError as err:
             console.print(f"[red]{err}[/red]")
             return
+        if not _model_is_usable(opts.model, console):
+            return
 
-    queue_items = scan.build_queue(opts.root)
+    with console.status("Scanning markdown files for assets…"):
+        queue_items = scan.build_queue(opts.root)
 
     if opts.skip_existing:
         queue_items = generate.filter_existing_captions(
@@ -107,16 +156,6 @@ def _generate_command(args: argparse.Namespace) -> None:
     if not queue_items:
         console.print("[yellow]No items to process.[/yellow]")
         return
-
-    # Warn (but proceed) if the model id is not in OpenRouter's catalogue: it is
-    # likely a typo or a bare name missing its `provider/` prefix.
-    known_models = openrouter.list_model_ids()
-    if known_models and opts.model not in known_models:
-        console.print(
-            f"[yellow]Warning: '{opts.model}' is not a known OpenRouter model id. "
-            "Model ids look like 'google/gemini-2.5-flash'; browse "
-            "https://openrouter.ai/models or tab-complete --model.[/yellow]"
-        )
 
     # Confirm before spending money, unless explicitly skipped or running
     # in a non-interactive context (automation/tests).
