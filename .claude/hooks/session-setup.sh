@@ -95,9 +95,16 @@ if [ -f "$PROJECT_DIR/package.json" ] && [ ! -d "$PROJECT_DIR/node_modules" ]; t
   fi
 fi
 
-# Install Python dependencies if uv.lock exists
+# Install Python dependencies. Prefer uv when a lockfile is present;
+# otherwise fall back to an editable pip install so the package and its
+# dev tools (pytest, ruff, …) are available for the Stop-hook CI checks.
 if [ -f "$PROJECT_DIR/uv.lock" ] && command -v uv &>/dev/null; then
   uv sync --quiet 2>/dev/null || warn "Failed to sync Python dependencies"
+elif [ -f "$PROJECT_DIR/pyproject.toml" ] && command -v pip3 &>/dev/null; then
+  echo "Installing Python dependencies..."
+  pip3 install --quiet -e "$PROJECT_DIR[dev]" ||
+    pip3 install --quiet -e "$PROJECT_DIR" ||
+    warn "Failed to install Python dependencies"
 fi
 
 echo "Session setup complete"
