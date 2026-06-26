@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Auto Version Bump and Publish
 
 on:
   push:
@@ -7,6 +7,10 @@ on:
   pull_request:
     branches:
       - main
+
+concurrency:
+  group: version-and-publish
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -46,48 +50,14 @@ jobs:
       - name: Lint with ruff
         run: ruff check alt_text_llm
 
-  version-check:
-    name: Check if version needs publishing
+  version-and-publish:
+    name: Auto-bump version and publish to PyPI
     needs: test
-    # Only publish from pushes to main, never from pull requests.
+    # Only bump/publish from pushes to main, never from pull requests.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.check.outputs.version }}
-      should_publish: ${{ steps.check.outputs.should_publish }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Determine whether version already exists on PyPI
-        id: check
-        run: |
-          set -euo pipefail
-          VERSION=$(grep -E '^__version__' alt_text_llm/__init__.py | sed -E 's/.*"([^"]+)".*/\1/')
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Local version: ${VERSION}"
-          # Query the PyPI JSON API. A 404 means the package/version is new.
-          HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" "https://pypi.org/pypi/alt-text-llm/json" || echo "000")
-          if [ "${HTTP_STATUS}" != "200" ]; then
-            echo "PyPI returned HTTP ${HTTP_STATUS}; assuming version is new."
-            echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if python -c "import json,sys; data=json.load(open('response.json')); sys.exit(0 if '${VERSION}' in data.get('releases', {}) else 1)"; then
-            echo "Version ${VERSION} already exists on PyPI; skipping publish."
-            echo "should_publish=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Version ${VERSION} is new; will publish."
-            echo "should_publish=true" >> "$GITHUB_OUTPUT"
-          fi
-
-  publish:
-    name: Publish to PyPI
-    needs: version-check
-    if: needs.version-check.outputs.should_publish == 'true'
-    runs-on: ubuntu-latest
     permissions:
-      contents: write # Required to create a git tag and GitHub Release
+      contents: write # Push the version-bump commit, tag, and Release
       id-token: write # Required for trusted publishing
     environment:
       name: pypi
@@ -96,6 +66,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Full history + tags so version_bump.sh can analyze the commit range
+          # since the last release tag.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -109,21 +83,41 @@ jobs:
           python -m pip install --upgrade pip
           pip install build
 
+      - name: Compute next version from Conventional Commits
+        id: bump
+        run: bash scripts/version_bump.sh
+
       - name: Build package
+        if: steps.bump.outputs.should_publish == 'true'
         run: python -m build
 
       - name: Publish to PyPI
+        if: steps.bump.outputs.should_publish == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           # No API token needed - uses OIDC trusted publishing
           verbose: true
 
-      - name: Create git tag and GitHub Release
+      - name: Commit version bump, tag, and create GitHub Release
+        if: steps.bump.outputs.should_publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.version-check.outputs.version }}
+          VERSION: ${{ steps.bump.outputs.version }}
         run: |
           set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Commit the bumped __version__ back to main. [skip ci] keeps this
+          # push from spawning another publish run. Non-fatal: the release is
+          # already on PyPI, and PyPI is the source of truth for the next bump,
+          # so a protected branch that rejects the push doesn't fail the release.
+          git add alt_text_llm/__init__.py
+          git commit -m "chore: release v${VERSION} [skip ci]"
+          if ! git push origin HEAD:main; then
+            echo "::warning::Could not push the version-bump commit to main; release was published regardless."
+          fi
+          # The Release also creates the v<version> tag, which the next run uses
+          # to scope its commit-range analysis.
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
             --generate-notes \
