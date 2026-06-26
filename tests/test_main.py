@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -192,37 +193,29 @@ def test_estimate_only_does_not_require_api_key(
         raise openrouter.OpenRouterError("should not be called")
 
     monkeypatch.setattr(openrouter, "get_api_key", tracking_get_api_key)
-    monkeypatch.setattr(main, "Console", lambda: Mock())
+    console = Mock()
+    console.status = lambda *a, **k: nullcontext()
+    monkeypatch.setattr(main, "Console", lambda: console)
 
     # Should not raise and should not consult the API key.
     main._generate_command(_generate_args(temp_dir, estimate_only=True))
     assert key_checked is False
 
 
-def test_generate_command_warns_on_unknown_model(
+def test_generate_command_aborts_on_unknown_model(
     temp_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A model id absent from the catalogue triggers a warning but proceeds."""
+    """A model id absent from the catalogue aborts before generating."""
     monkeypatch.setenv(openrouter.API_KEY_ENV_VAR, "sk-or-test")
-    monkeypatch.setattr(
-        scan,
-        "build_queue",
-        lambda root: [
-            scan.QueueItem(
-                markdown_file="t.md",
-                asset_path="i.jpg",
-                line_number=1,
-                context_snippet="c",
-            )
-        ],
-    )
-    monkeypatch.setattr(generate, "estimate_cost", lambda m, n: "Estimated cost: $0")
     monkeypatch.setattr(
         openrouter, "list_model_ids", lambda: ["google/gemini-2.5-flash"]
     )
 
-    # Stop before real generation (must be a coroutine for asyncio.run).
+    generate_called = False
+
     async def fake_generate(*a, **k):
+        nonlocal generate_called
+        generate_called = True
         return []
 
     monkeypatch.setattr(generate, "async_generate_suggestions", fake_generate)
@@ -230,12 +223,39 @@ def test_generate_command_warns_on_unknown_model(
     printed: list[str] = []
     console = Mock()
     console.print = lambda msg, *a, **k: printed.append(str(msg))
+    console.status = lambda *a, **k: nullcontext()
     monkeypatch.setattr(main, "Console", lambda: console)
 
     args = _generate_args(temp_dir, model="gemini-3.0-flash", skip_existing=False)
     main._generate_command(args)
 
-    assert any("not a known OpenRouter model id" in line for line in printed)
+    assert any(
+        "is not a valid OpenRouter model id" in line for line in printed
+    )
+    assert not generate_called
+
+
+def test_generate_command_suggests_prefixed_model(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare gemini slug is rejected with a 'did you mean google/...' hint."""
+    monkeypatch.setenv(openrouter.API_KEY_ENV_VAR, "sk-or-test")
+    monkeypatch.setattr(
+        openrouter, "list_model_ids", lambda: ["google/gemini-2.5-flash"]
+    )
+
+    printed: list[str] = []
+    console = Mock()
+    console.print = lambda msg, *a, **k: printed.append(str(msg))
+    console.status = lambda *a, **k: nullcontext()
+    monkeypatch.setattr(main, "Console", lambda: console)
+
+    args = _generate_args(temp_dir, model="gemini-2.5-flash")
+    main._generate_command(args)
+
+    assert any(
+        "Did you mean 'google/gemini-2.5-flash'?" in line for line in printed
+    )
 
 
 # ---------------------------------------------------------------------------
