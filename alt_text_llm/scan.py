@@ -4,6 +4,7 @@ Scan markdown files for assets without meaningful alt text.
 This script produces a JSON work-queue.
 """
 
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -83,11 +84,16 @@ WIKILINK_ASSET_EXTENSIONS: tuple[str, ...] = (
 )
 
 
-def _is_alt_meaningful(alt: str | None) -> bool:
-    if alt is None:
+def _is_meaningful(text: str | None, placeholders: set[str]) -> bool:
+    """Return True when *text* is non-empty and not a known placeholder."""
+    if text is None:
         return False
-    alt_stripped = alt.strip().lower()
-    return bool(alt_stripped) and alt_stripped not in _PLACEHOLDER_ALTS
+    text_stripped = text.strip().lower()
+    return bool(text_stripped) and text_stripped not in placeholders
+
+
+def _is_alt_meaningful(alt: str | None) -> bool:
+    return _is_meaningful(alt, _PLACEHOLDER_ALTS)
 
 
 def _iter_media_tokens(tokens: Sequence[Token]) -> Iterable[Token]:
@@ -123,10 +129,7 @@ def _iter_media_tokens(tokens: Sequence[Token]) -> Iterable[Token]:
 
 
 def _is_video_label_meaningful(label: str | None) -> bool:
-    if label is None:
-        return False
-    label_stripped = label.strip().lower()
-    return bool(label_stripped) and label_stripped not in _PLACEHOLDER_VIDEO_LABELS
+    return _is_meaningful(label, _PLACEHOLDER_VIDEO_LABELS)
 
 
 def _extract_html_img_info(token: Token) -> list[tuple[str, str | None]]:
@@ -179,6 +182,11 @@ def _get_line_number(token: Token, lines: Sequence[str], search_snippet: str) ->
         inner = search_snippet[1:-1]
         candidates += [inner, unquote(inner)]
 
+    # NOTE: token.map (handled above) is always preferred and is correct even
+    # for duplicate substrings. This fallback returns the FIRST line containing
+    # the snippet, so when the same asset substring appears on multiple lines
+    # and token.map is unavailable, the earliest occurrence wins. Fully fixing
+    # this would require per-asset occurrence tracking; out of scope here.
     for candidate in dict.fromkeys(candidates):
         for idx, ln in enumerate(lines):
             if candidate in ln:
@@ -338,20 +346,28 @@ def _process_file(md_path: Path) -> list[QueueItem]:
 
     items: list[QueueItem] = []
     for token in _iter_media_tokens(md.parse(source_text)):
-        if token.type == "image":
-            items.extend(_handle_md_asset(token, md_path, lines))
+        try:
+            # Dispatch via cheap substring checks so each HTML token is parsed
+            # at most once (inside the extractor) rather than here for dispatch.
+            content_lower = token.content.lower()
+            if token.type == "image":
+                items.extend(_handle_md_asset(token, md_path, lines))
+            elif token.type in {"html_inline", "html_block"}:
+                if "<img" in content_lower:
+                    items.extend(_handle_html_asset(token, md_path, lines))
+                elif "<video" in content_lower:
+                    items.extend(_handle_html_video(token, md_path, lines))
+            else:  # inline: complete <video> HTML plus any wikilink images
+                if "<video" in content_lower:
+                    items.extend(_handle_html_video(token, md_path, lines))
+                items.extend(_handle_wikilink_asset(token, md_path, lines))
+        except ValueError as exc:
+            # A single unfindable/odd asset must not abort the rest of the file.
+            print(
+                f"warning: skipping asset in {md_path}: {exc}",
+                file=sys.stderr,
+            )
             continue
-
-        soup = BeautifulSoup(token.content, "html.parser")
-        if token.type in {"html_inline", "html_block"}:
-            if soup.find("img"):
-                items.extend(_handle_html_asset(token, md_path, lines))
-            elif soup.find("video"):
-                items.extend(_handle_html_video(token, md_path, lines))
-        else:  # inline: complete <video> HTML plus any wikilink images
-            if soup.find("video"):
-                items.extend(_handle_html_video(token, md_path, lines))
-            items.extend(_handle_wikilink_asset(token, md_path, lines))
 
     # A video can surface twice—via an inline token and again via its
     # html_inline children—so keep only the first item per asset.
@@ -367,6 +383,14 @@ def build_queue(root: Path) -> list[QueueItem]:
     md_files = utils.get_files(root, filetypes_to_match=(".md",), use_git_ignore=True)
     queue: list[QueueItem] = []
     for md_file in md_files:
-        queue.extend(_process_file(md_file))
+        # One unreadable or otherwise odd file must not abort the whole batch.
+        try:
+            queue.extend(_process_file(md_file))
+        except (OSError, ValueError) as exc:
+            print(
+                f"warning: skipping file {md_file}: {exc}",
+                file=sys.stderr,
+            )
+            continue
 
     return queue

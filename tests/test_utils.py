@@ -568,7 +568,9 @@ class TestConvertAvifToPng:
 
     def test_avif_conversion_success(self, temp_dir: Path) -> None:
         avif_file = temp_dir / "test.avif"
-        png_file = temp_dir / "test.png"
+        # Target name now includes a short hash of the source path to avoid
+        # collisions between same-stem assets in one workspace.
+        png_file = temp_dir / utils._unique_target_name(avif_file, ".png")
 
         create_test_image(avif_file, "100x100")
 
@@ -580,6 +582,8 @@ class TestConvertAvifToPng:
             result = utils._convert_avif_to_png(avif_file, temp_dir)
 
             assert result == png_file
+            assert result.parent == temp_dir
+            assert result.suffix == ".png"
             mock_run.assert_called_once()
 
             # Verify exact command structure
@@ -594,6 +598,7 @@ class TestConvertAvifToPng:
             assert call_kwargs["check"] is True
             assert call_kwargs["capture_output"] is True
             assert call_kwargs["text"] is True
+            assert call_kwargs["timeout"] == 30
 
     def test_avif_conversion_failure(self, temp_dir: Path) -> None:
         """Test AVIF to PNG conversion failure handling."""
@@ -629,7 +634,7 @@ class TestConvertGifToMp4:
     def test_gif_conversion_success(self, temp_dir: Path) -> None:
         """Test successful GIF to MP4 conversion."""
         gif_file = temp_dir / "test.gif"
-        mp4_file = temp_dir / "test.mp4"
+        mp4_file = temp_dir / utils._unique_target_name(gif_file, ".mp4")
         create_test_image(gif_file, "100x100")
 
         with (
@@ -1057,7 +1062,11 @@ class TestLoadExistingCaptions:
     [
         ("https://example.com/image.jpg", True),
         ("http://example.com/image.png", True),
-        ("ftp://example.com/file.txt", True),
+        # ftp is not a fetchable scheme for download_asset, so it is no longer
+        # classified as a URL (it would be unfetchable anyway).
+        ("ftp://example.com/file.txt", False),
+        ("//cdn.example.com/x.png", True),  # protocol-relative
+        ("data:image/png;base64,iVBORw0KGgo=", True),  # data URI
         ("./local/file.jpg", False),
         ("../parent/file.png", False),
         ("/absolute/path/file.jpg", False),
@@ -1521,3 +1530,254 @@ def test_build_prompt_asset_type(
     prompt = utils.build_prompt(qi, max_chars=max_chars)
     assert expected_keyword in prompt.lower()
     assert f"Under {max_chars} characters" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Robustness regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestSplitYamlFrontmatterDetection:
+    """Regression tests for split_yaml frontmatter vs thematic-break handling."""
+
+    def test_thematic_breaks_without_frontmatter(self, tmp_path: Path) -> None:
+        """A file with no frontmatter but `---` rules returns ({}, '')."""
+        content = (
+            "Top section\n\n"
+            "---\n\n"
+            "Middle section\n\n"
+            "---\n\n"
+            "Bottom section\n"
+        )
+        fp = tmp_path / "rules.md"
+        fp.write_text(content, encoding="utf-8")
+
+        metadata, body = utils.split_yaml(fp)
+
+        assert metadata == {}
+        assert body == ""
+
+    def test_frontmatter_with_thematic_break_in_body(
+        self, tmp_path: Path
+    ) -> None:
+        """Valid frontmatter parses and a `---` rule in the body is retained."""
+        content = (
+            "---\n"
+            "title: My Article\n"
+            "---\n"
+            "Intro paragraph\n\n"
+            "---\n\n"
+            "After the rule\n"
+        )
+        fp = tmp_path / "with_fm.md"
+        fp.write_text(content, encoding="utf-8")
+
+        metadata, body = utils.split_yaml(fp)
+
+        assert metadata.get("title") == "My Article"
+        assert "After the rule" in body
+        # The thematic break must survive in the body.
+        assert "\n---\n" in body
+
+    def test_crlf_line_endings(self, tmp_path: Path) -> None:
+        """CRLF-terminated frontmatter is detected and parsed."""
+        content = "---\r\ntitle: CRLF Title\r\n---\r\nBody line\r\n"
+        fp = tmp_path / "crlf.md"
+        fp.write_bytes(content.encode("utf-8"))
+
+        metadata, body = utils.split_yaml(fp)
+
+        assert metadata.get("title") == "CRLF Title"
+        assert "Body line" in body
+
+    def test_frontmatter_parsing_to_list_yields_empty_dict(
+        self, tmp_path: Path
+    ) -> None:
+        """Frontmatter that parses to a non-dict (a list) is guarded to {}."""
+        content = "---\n- one\n- two\n---\nBody\n"
+        fp = tmp_path / "list_fm.md"
+        fp.write_text(content, encoding="utf-8")
+
+        metadata, body = utils.split_yaml(fp)
+
+        assert metadata == {}
+        assert "Body" in body
+
+    def test_bom_prefixed_frontmatter(self, tmp_path: Path) -> None:
+        """A UTF-8 BOM before the opening fence does not break detection."""
+        content = "---\ntitle: BOM Title\n---\nBody\n"
+        fp = tmp_path / "bom.md"
+        fp.write_bytes(b"\xef\xbb\xbf" + content.encode("utf-8"))
+
+        metadata, body = utils.split_yaml(fp)
+
+        assert metadata.get("title") == "BOM Title"
+        assert "Body" in body
+
+
+def test_generate_article_context_bom(temp_dir: Path) -> None:
+    """generate_article_context reads BOM-prefixed files without corruption."""
+    content = "---\ntitle: T\n---\nPara 1\n\nTarget para\n\nPara 3\n"
+    md = temp_dir / "bom_ctx.md"
+    md.write_bytes(b"\xef\xbb\xbf" + content.encode("utf-8"))
+
+    lines = md.read_text(encoding="utf-8-sig").splitlines()
+    target_line = next(
+        i + 1 for i, line in enumerate(lines) if "Target para" in line
+    )
+    queue_item = scan.QueueItem(
+        markdown_file=str(md),
+        asset_path="image.jpg",
+        line_number=target_line,
+        context_snippet="unused",
+    )
+
+    context = utils.generate_article_context(queue_item, trim_frontmatter=True)
+    assert "Target para" in context
+    assert "title:" not in context
+
+
+def test_generate_article_context_no_negative_index(temp_dir: Path) -> None:
+    """A target line inside the frontmatter must not crash via negative index."""
+    frontmatter = {"title": "Test", "author": "Someone", "date": "2023-01-01"}
+    content = "Body paragraph one\n\nBody paragraph two\n"
+    md = create_markdown_file(
+        temp_dir / "neg_index.md", frontmatter=frontmatter, content=content
+    )
+
+    # Point at line 2, which is inside the frontmatter block. After trimming,
+    # the adjusted index would be negative; it must be clamped to 0.
+    queue_item = scan.QueueItem(
+        markdown_file=str(md),
+        asset_path="image.jpg",
+        line_number=2,
+        context_snippet="unused",
+    )
+
+    context = utils.generate_article_context(queue_item, trim_frontmatter=True)
+    assert isinstance(context, str)  # Should not raise.
+
+
+def test_paragraph_context_duplicate_lines() -> None:
+    """Duplicate lines in different paragraphs resolve to the correct one."""
+    lines = [
+        "Intro paragraph",
+        "",
+        "Duplicate line",  # Para 1, index 2
+        "First neighbor",
+        "",
+        "Middle paragraph",
+        "",
+        "Duplicate line",  # Para 3, index 7
+        "Second neighbor",
+        "",
+        "Outro paragraph",
+    ]
+
+    # Target the SECOND occurrence of "Duplicate line" (index 7).
+    snippet = utils.paragraph_context(lines, 7, max_before=0, max_after=0)
+
+    assert "Second neighbor" in snippet
+    assert "First neighbor" not in snippet
+
+
+class TestDownloadAssetHardening:
+    """Tests for path traversal, size cap, and non-fetchable URL handling."""
+
+    def test_path_traversal_blocked(
+        self, temp_dir: Path, base_queue_item: scan.QueueItem
+    ) -> None:
+        """An asset path escaping the markdown parent dir is not found."""
+        # Create a real file outside the markdown's directory.
+        outside = temp_dir.parent / "secret.txt"
+        outside.write_text("top secret", encoding="utf-8")
+        try:
+            md_dir = temp_dir / "article"
+            md_dir.mkdir()
+            base_queue_item.markdown_file = str(md_dir / "post.md")
+            base_queue_item.asset_path = "../../secret.txt"
+
+            with pytest.raises(FileNotFoundError, match="Unable to locate asset"):
+                utils.download_asset(base_queue_item, temp_dir)
+        finally:
+            outside.unlink(missing_ok=True)
+
+    def test_oversized_download_rejected(
+        self, temp_dir: Path, base_queue_item: scan.QueueItem
+    ) -> None:
+        """Streaming more than the size budget raises AltGenerationError."""
+        base_queue_item.asset_path = "https://example.com/big.jpg"
+
+        oversize_chunk = b"x" * (1024 * 1024)
+        num_chunks = (utils._MAX_DOWNLOAD_BYTES // len(oversize_chunk)) + 2
+
+        mock_response = Mock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.iter_content.return_value = (
+            oversize_chunk for _ in range(num_chunks)
+        )
+
+        with patch("requests.get", return_value=mock_response):
+            with pytest.raises(
+                utils.AltGenerationError, match="exceeds the maximum"
+            ):
+                utils.download_asset(base_queue_item, temp_dir)
+
+    def test_data_uri_not_treated_as_path(
+        self, temp_dir: Path, base_queue_item: scan.QueueItem
+    ) -> None:
+        """A data: URI raises a clear error instead of a filesystem lookup."""
+        base_queue_item.asset_path = "data:image/png;base64,iVBORw0KGgo="
+
+        with pytest.raises(
+            utils.AltGenerationError, match="Unsupported remote asset"
+        ):
+            utils.download_asset(base_queue_item, temp_dir)
+
+    def test_uses_request_headers_constant(
+        self, temp_dir: Path, base_queue_item: scan.QueueItem
+    ) -> None:
+        """download_asset passes the module-level _REQUEST_HEADERS constant."""
+        base_queue_item.asset_path = "https://example.com/image.jpg"
+
+        mock_response = Mock()
+        mock_response.iter_content.return_value = [b"data"]
+        mock_response.raise_for_status.return_value = None
+
+        with patch("requests.get", return_value=mock_response) as mock_get:
+            utils.download_asset(base_queue_item, temp_dir)
+            assert mock_get.call_args[1]["headers"] is utils._REQUEST_HEADERS
+
+
+def test_alt_generation_result_prefill_alt() -> None:
+    """prefill_alt prefers final_alt, falling back to suggested_alt."""
+    with_final = utils.AltGenerationResult(
+        markdown_file="a.md",
+        asset_path="a.jpg",
+        suggested_alt="suggested",
+        model="m",
+        context_snippet="ctx",
+        final_alt="final",
+    )
+    assert with_final.prefill_alt == "final"
+
+    without_final = utils.AltGenerationResult(
+        markdown_file="a.md",
+        asset_path="a.jpg",
+        suggested_alt="suggested",
+        model="m",
+        context_snippet="ctx",
+        final_alt=None,
+    )
+    assert without_final.prefill_alt == "suggested"
+
+    empty_final = utils.AltGenerationResult(
+        markdown_file="a.md",
+        asset_path="a.jpg",
+        suggested_alt="suggested",
+        model="m",
+        context_snippet="ctx",
+        final_alt="",
+    )
+    # An explicit empty string is still "final" (not None), so it wins.
+    assert empty_final.prefill_alt == ""

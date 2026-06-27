@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from alt_text_llm import scan, utils
+from alt_text_llm import openrouter, scan, utils
+
+FAKE_LLM_CAPTION = "A friendly robot waving hello"
 
 
 @pytest.fixture(autouse=True)
@@ -21,6 +23,23 @@ def temp_dir():
     """Create a temporary directory for tests."""
     with tempfile.TemporaryDirectory() as temp_dir:
         yield Path(temp_dir)
+
+
+@pytest.fixture
+def fake_llm_on_path(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Stub OpenRouter generation with a deterministic caption.
+
+    Patches ``openrouter.generate_caption`` so the REAL generate pipeline
+    (``generate._run_llm`` -> ``_run_llm_async`` -> ``async_generate_suggestions``)
+    runs without network or a real LLM. Returns the caption string the stub
+    emits.
+    """
+
+    def fake_generate_caption(attachment, prompt, model, timeout):
+        return FAKE_LLM_CAPTION, {"cost": 0.0001}
+
+    monkeypatch.setattr(openrouter, "generate_caption", fake_generate_caption)
+    return FAKE_LLM_CAPTION
 
 
 @pytest.fixture

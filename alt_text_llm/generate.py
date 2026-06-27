@@ -2,30 +2,15 @@
 
 import asyncio
 import shutil
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence, TypeVar
 
 from rich.console import Console
-from rich.progress import Progress
+from rich.progress import Progress, SpinnerColumn, TimeElapsedColumn
 
-from alt_text_llm import scan, utils
-
-# Approximate cost estimates per 1000 tokens (as of Sep 2025)
-MODEL_COSTS = {
-    # https://www.helicone.ai/llm-cost
-    "gemini-2.5-pro": {"input": 0.00125, "output": 0.01},
-    "gemini-2.5-flash": {"input": 0.0003, "output": 0.0025},
-    "gemini-2.5-flash-lite": {"input": 0.00001, "output": 0.00004},
-    # https://developers.googleblog.com/en/continuing-to-bring-you-our-latest-models-with-an-improved-gemini-2-5-flash-and-flash-lite-release/?ref=testingcatalog.com
-    "gemini-2.5-flash-lite-preview-09-2025": {
-        "input": 0.00001,
-        "output": 0.00004,
-    },
-    "gemini-2.5-flash-preview-09-2025": {"input": 0.00001, "output": 0.00004},
-}
+from alt_text_llm import openrouter, scan, utils
 
 
 def _run_llm(
@@ -33,28 +18,22 @@ def _run_llm(
     prompt: str,
     model: str,
     timeout: int,
-) -> str:
-    """Execute LLM command and return generated caption."""
-    llm_path = utils.find_executable("llm")
+) -> tuple[str, float | None]:
+    """Generate a caption via OpenRouter.
 
-    result = subprocess.run(
-        [llm_path, "-m", model, "-a", str(attachment), "--usage", prompt],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
+    Returns the caption text and the request's actual cost in USD (``None`` if
+    OpenRouter did not report a cost for the request).
+
+    A timeout (or any transport failure) surfaces as an
+    :class:`~alt_text_llm.openrouter.OpenRouterError`, a subclass of
+    :class:`utils.AltGenerationError`, so a single slow item is skipped rather
+    than aborting the whole async batch.
+    """
+    caption, usage = openrouter.generate_caption(
+        attachment, prompt, model, timeout
     )
-
-    if result.returncode != 0:
-        error_output = result.stderr.strip() or result.stdout.strip()
-        raise utils.AltGenerationError(
-            f"Caption generation failed for {attachment}: {error_output}"
-        )
-
-    cleaned = result.stdout.strip()
-    if not cleaned:
-        raise utils.AltGenerationError("LLM returned empty caption")
-    return cleaned
+    cost = usage.get("cost")
+    return caption, float(cost) if isinstance(cost, (int, float)) else None
 
 
 @dataclass(slots=True)
@@ -75,14 +54,16 @@ def estimate_cost(
     avg_prompt_tokens: int = 4500,
     avg_output_tokens: int = 1500,
 ) -> str:
-    """Estimate the cost of processing the queue with the given model."""
-    model_lower = model.lower()
-    if model_lower not in MODEL_COSTS:
+    """Estimate the cost of processing the queue with the given model.
+
+    Pricing is pulled live from OpenRouter's model catalogue (USD per token).
+    """
+    pricing = openrouter.get_pricing(model)
+    if pricing is None:
         return f"Cost estimation not available for model: {model}"
 
-    cost_info = MODEL_COSTS[model_lower]
-    input_cost = (avg_prompt_tokens * queue_count / 1000) * cost_info["input"]
-    output_cost = (avg_output_tokens * queue_count / 1000) * cost_info["output"]
+    input_cost = avg_prompt_tokens * queue_count * pricing["input"]
+    output_cost = avg_output_tokens * queue_count * pricing["output"]
     total_cost = input_cost + output_cost
     return f"Estimated cost: ${total_cost:.3f} (${input_cost:.3f} input + ${output_cost:.3f} output)"
 
@@ -123,58 +104,91 @@ _CONCURRENCY_LIMIT = 32
 
 
 async def _run_llm_async(
+    index: int,
     queue_item: "scan.QueueItem",
     options: GenerateAltTextOptions,
     sem: asyncio.Semaphore,
-) -> utils.AltGenerationResult:
-    """Download asset, run LLM in a thread; clean up; return suggestion payload."""
-    workspace = Path(tempfile.mkdtemp())
-    try:
-        async with sem:
+    progress: Progress,
+) -> tuple[int, utils.AltGenerationResult, float | None]:
+    """Download asset, run LLM in a thread; clean up; return suggestion payload.
+
+    Returns the original *index* (for deterministic ordering), the suggestion,
+    and the request's actual cost in USD (``None`` when OpenRouter did not
+    report a cost).
+    """
+    # Create the temp dir inside the semaphore so that a large queue does not
+    # spawn thousands of temp directories upfront (all tasks are created
+    # eagerly). Only up to _CONCURRENCY_LIMIT workspaces exist at once.
+    async with sem:
+        # Log when an item actually starts (i.e. acquires a concurrency slot),
+        # so the run shows visible movement even while the first slow uploads
+        # (e.g. large videos) are still in flight and the bar sits at 0.
+        progress.console.print(f"[dim]→ {queue_item.asset_path}[/dim]")
+        workspace = Path(tempfile.mkdtemp())
+        try:
             attachment = await asyncio.to_thread(
                 utils.download_asset, queue_item, workspace
             )
             prompt = utils.build_prompt(queue_item, options.max_chars)
-            caption = await asyncio.to_thread(
+            caption, cost = await asyncio.to_thread(
                 _run_llm,
                 attachment,
                 prompt,
                 options.model,
                 options.timeout,
             )
-        return utils.AltGenerationResult(
-            markdown_file=queue_item.markdown_file,
-            asset_path=queue_item.asset_path,
-            suggested_alt=caption,
-            model=options.model,
-            context_snippet=queue_item.context_snippet,
-            line_number=queue_item.line_number,
-        )
-    finally:
-        shutil.rmtree(workspace, ignore_errors=True)
+            result = utils.AltGenerationResult(
+                markdown_file=queue_item.markdown_file,
+                asset_path=queue_item.asset_path,
+                suggested_alt=caption,
+                model=options.model,
+                context_snippet=queue_item.context_snippet,
+                line_number=queue_item.line_number,
+            )
+            return index, result, cost
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
 
 
 async def async_generate_suggestions(
     queue_items: Sequence["scan.QueueItem"],
     options: GenerateAltTextOptions,
 ) -> list[utils.AltGenerationResult]:
-    """Generate suggestions concurrently for *queue_items*."""
+    """Generate suggestions concurrently for *queue_items*.
+
+    Prints the total actual cost (summed from OpenRouter's per-request ``cost``)
+    once generation finishes.
+    """
     if not queue_items:
         return []
 
     sem = asyncio.Semaphore(_CONCURRENCY_LIMIT)
-    tasks = [
-        asyncio.create_task(_run_llm_async(qi, options, sem))
-        for qi in queue_items
-    ]
 
-    suggestions: list[utils.AltGenerationResult] = []
-    with Progress() as progress:
-        task_id = progress.add_task("Generating alt text", total=len(tasks))
+    # Collect by original index so output order is deterministic (matches input
+    # order) regardless of completion order. Failed/skipped items are omitted.
+    completed: dict[int, utils.AltGenerationResult] = {}
+    total_cost = 0.0
+    # SpinnerColumn keeps the display visibly alive while the first (often slow,
+    # e.g. video) requests are still in flight and the bar is stuck at 0.
+    with Progress(
+        SpinnerColumn(),
+        *Progress.get_default_columns(),
+        TimeElapsedColumn(),
+    ) as progress:
+        task_id = progress.add_task("Generating alt text", total=len(queue_items))
+        # Tasks are created inside the Progress block so each can log its start
+        # through the live display without clobbering the bar.
+        tasks = [
+            asyncio.create_task(_run_llm_async(index, qi, options, sem, progress))
+            for index, qi in enumerate(queue_items)
+        ]
         try:
             for finished in asyncio.as_completed(tasks):
                 try:
-                    suggestions.append(await finished)
+                    index, result, cost = await finished
+                    completed[index] = result
+                    if cost is not None:
+                        total_cost += cost
                 except (
                     utils.AltGenerationError,
                     FileNotFoundError,
@@ -188,4 +202,9 @@ async def async_generate_suggestions(
                 description="Generating alt text (cancelled, finishing up...)",
             )
 
-    return suggestions
+    if total_cost > 0:
+        Console().print(
+            f"[bold blue]Actual cost: ${total_cost:.4f}[/bold blue]"
+        )
+
+    return [completed[index] for index in sorted(completed)]

@@ -26,6 +26,9 @@ def _escape_markdown_alt_text(alt_text: str) -> str:
     alt_text = alt_text.replace("\\", "\\\\")
     # Escape dollar signs to prevent LaTeX interpretation
     alt_text = alt_text.replace("$", "\\$")
+    # Escape square brackets so they don't break the markdown image syntax
+    alt_text = alt_text.replace("[", "\\[")
+    alt_text = alt_text.replace("]", "\\]")
     return alt_text
 
 
@@ -46,7 +49,10 @@ def _apply_markdown_image_alt(
     # Match markdown image syntax: ![alt](path)
     # Need to escape special regex chars in asset_path
     escaped_path = re.escape(asset_path)
-    pattern = rf"!\[([^\]]*)\]\({escaped_path}\s*\)"
+    # Optionally allow a markdown title after the path: ![](img.png "Title").
+    # Group 2 captures the title (including its leading whitespace) so it can be
+    # preserved on rewrite.
+    pattern = rf"!\[([^\]]*)\]\({escaped_path}(\s+\"[^\"]*\")?\s*\)"
 
     match = re.search(pattern, line)
     if not match:
@@ -55,10 +61,14 @@ def _apply_markdown_image_alt(
     old_alt = match.group(1) or None
     # Escape special characters in alt text
     escaped_alt = _escape_markdown_alt_text(new_alt)
-    # Replace the alt text - use lambda to avoid backslash interpretation in replacement
-    new_line = re.sub(
-        pattern, lambda m: f"![{escaped_alt}]({asset_path})", line, count=1
-    )
+
+    # Replace the alt text for every matching image on the line (count=0),
+    # preserving any title present in each individual match.
+    def _replace(m: re.Match[str]) -> str:
+        title = m.group(2) or ""
+        return f"![{escaped_alt}]({asset_path}{title})"
+
+    new_line = re.sub(pattern, _replace, line, count=0)
     return new_line, old_alt
 
 
@@ -253,7 +263,7 @@ def _apply_wikilink_image_alt(
     escaped_alt = _escape_markdown_alt_text(new_alt)
     # Replace with new alt text - use lambda to avoid backslash interpretation
     new_line = re.sub(
-        pattern, lambda m: f"![[{asset_path}|{escaped_alt}]]", line, count=1
+        pattern, lambda m: f"![[{asset_path}|{escaped_alt}]]", line, count=0
     )
     return new_line, old_alt
 
@@ -300,6 +310,52 @@ def _try_all_image_formats(
     return line, None
 
 
+def _apply_caption_to_lines(
+    lines: list[str],
+    caption_item: utils.AltGenerationResult,
+    md_path: Path,
+    console: Console,
+) -> tuple[str | None, str] | None:
+    """
+    Apply a caption to all instances of an asset across in-memory lines.
+
+    Mutates ``lines`` in place. Does not perform any file I/O so that callers
+    can batch multiple captions into a single read/write cycle.
+
+    Args:
+        lines: The file's lines (mutated in place when a match is found)
+        caption_item: The AltGenerationResult with final_alt to apply
+        md_path: Path to the markdown file (used only for the warning message)
+        console: Rich console for output
+
+    Returns:
+        Tuple of (old_alt, new_alt) if successful, None otherwise
+    """
+    assert caption_item.final_alt is not None, "final_alt must be set"
+
+    modified_count = 0
+    last_old_alt: str | None = None
+
+    # Search all lines for the asset and replace
+    for line_idx, original_line in enumerate(lines):
+        modified_line, old_alt = _try_all_image_formats(
+            original_line, caption_item.asset_path, caption_item.final_alt
+        )
+
+        if modified_line != original_line:
+            lines[line_idx] = modified_line
+            modified_count += 1
+            last_old_alt = old_alt
+
+    if modified_count == 0:
+        console.print(
+            f"[yellow]Warning: Could not find asset '{caption_item.asset_path}' in {md_path}[/yellow]"
+        )
+        return None
+
+    return (last_old_alt, caption_item.final_alt)
+
+
 def _apply_caption_to_file(
     md_path: Path,
     caption_item: utils.AltGenerationResult,
@@ -318,29 +374,11 @@ def _apply_caption_to_file(
     Returns:
         Tuple of (old_alt, new_alt) if successful, None otherwise
     """
-    assert caption_item.final_alt is not None, "final_alt must be set"
-
     source_text = md_path.read_text(encoding="utf-8")
     lines = source_text.splitlines()
 
-    modified_count = 0
-    last_old_alt: str | None = None
-
-    # Search all lines for the asset and replace
-    for line_idx, original_line in enumerate(lines):
-        modified_line, old_alt = _try_all_image_formats(
-            original_line, caption_item.asset_path, caption_item.final_alt
-        )
-
-        if modified_line != original_line:
-            lines[line_idx] = modified_line
-            modified_count += 1
-            last_old_alt = old_alt
-
-    if modified_count == 0:
-        console.print(
-            f"[orange]Warning: Could not find asset '{caption_item.asset_path}' in {md_path}[/orange]"
-        )
+    result = _apply_caption_to_lines(lines, caption_item, md_path, console)
+    if result is None:
         return None
 
     if not dry_run:
@@ -350,7 +388,7 @@ def _apply_caption_to_file(
             new_content += "\n"
         md_path.write_text(new_content, encoding="utf-8")
 
-    return (last_old_alt, caption_item.final_alt)
+    return result
 
 
 def _load_and_parse_captions(
@@ -453,18 +491,29 @@ def _process_file_captions(
 
     console.print(f"\n[dim]Processing {md_path} ({len(items)} captions)[/dim]")
 
+    # Read the file once, apply every caption in memory, then write once.
+    source_text = md_path.read_text(encoding="utf-8")
+    lines = source_text.splitlines()
+
     applied_count = 0
     for item in items:
-        result = _apply_caption_to_file(
-            md_path=md_path,
+        result = _apply_caption_to_lines(
+            lines=lines,
             caption_item=item,
+            md_path=md_path,
             console=console,
-            dry_run=dry_run,
         )
 
         if result:
             applied_count += 1
             _display_caption_result(result, item, console, dry_run)
+
+    if applied_count > 0 and not dry_run:
+        new_content = "\n".join(lines)
+        # Preserve trailing newline if original had one
+        if source_text.endswith("\n"):
+            new_content += "\n"
+        md_path.write_text(new_content, encoding="utf-8")
 
     return applied_count
 

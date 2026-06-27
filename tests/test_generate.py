@@ -1,20 +1,39 @@
 """Tests for generate.py module."""
 
+import asyncio
+import tempfile
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 
-from alt_text_llm import generate, scan, utils
+from alt_text_llm import generate, openrouter, scan, utils
+
+# Live per-token pricing (USD) as returned by OpenRouter's catalogue.
+_FAKE_PRICING = {
+    "google/gemini-2.5-flash": {"input": 0.0000003, "output": 0.0000025},
+    "google/gemini-2.5-flash-lite": {"input": 0.00000001, "output": 0.00000004},
+}
 
 
+@pytest.fixture
+def _patch_pricing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch openrouter.get_pricing with a deterministic local price table."""
+
+    def fake_get_pricing(model: str) -> dict[str, float] | None:
+        return _FAKE_PRICING.get(model)
+
+    monkeypatch.setattr(openrouter, "get_pricing", fake_get_pricing)
+
+
+@pytest.mark.usefixtures("_patch_pricing")
 @pytest.mark.parametrize(
     "model, queue_count, avg_prompt_tokens, avg_output_tokens",
     [
-        ("gemini-2.5-flash", 10, 300, 50),
-        ("gemini-2.5-flash-lite", 100, 300, 50),
-        ("gemini-2.5-flash", 1, 200, 30),
-        ("gemini-2.5-flash-lite", 50, 400, 80),
+        ("google/gemini-2.5-flash", 10, 300, 50),
+        ("google/gemini-2.5-flash-lite", 100, 300, 50),
+        ("google/gemini-2.5-flash", 1, 200, 30),
+        ("google/gemini-2.5-flash-lite", 50, 400, 80),
     ],
 )
 def test_estimate_cost_calculation_parametrized(
@@ -23,17 +42,10 @@ def test_estimate_cost_calculation_parametrized(
     avg_prompt_tokens: int,
     avg_output_tokens: int,
 ) -> None:
-    # Retrieve costs from the actual MODEL_COSTS constant
-    model_costs = generate.MODEL_COSTS[model]
-    input_cost_per_1k = model_costs["input"]
-    output_cost_per_1k = model_costs["output"]
+    pricing = _FAKE_PRICING[model]
 
-    expected_input = (
-        avg_prompt_tokens * queue_count / 1000
-    ) * input_cost_per_1k
-    expected_output = (
-        avg_output_tokens * queue_count / 1000
-    ) * output_cost_per_1k
+    expected_input = avg_prompt_tokens * queue_count * pricing["input"]
+    expected_output = avg_output_tokens * queue_count * pricing["output"]
     expected_total = expected_input + expected_output
 
     result = generate.estimate_cost(
@@ -45,13 +57,14 @@ def test_estimate_cost_calculation_parametrized(
     assert f"${expected_output:.3f} output" in result
 
 
+@pytest.mark.usefixtures("_patch_pricing")
 @pytest.mark.parametrize(
     "model, queue_count",
     [
-        ("gemini-2.5-flash", 1),
-        ("gemini-2.5-flash", 10),
-        ("gemini-2.5-flash-lite", 5),
-        ("gemini-2.5-flash-lite", 100),
+        ("google/gemini-2.5-flash", 1),
+        ("google/gemini-2.5-flash", 10),
+        ("google/gemini-2.5-flash-lite", 5),
+        ("google/gemini-2.5-flash-lite", 100),
     ],
 )
 def test_estimate_cost_format_consistency(
@@ -67,41 +80,96 @@ def test_estimate_cost_format_consistency(
     assert result.count("$") == 3  # Total, input, output
 
 
+@pytest.mark.usefixtures("_patch_pricing")
 def test_estimate_cost_invalid_model() -> None:
-    """Test cost estimation with invalid model returns informative message."""
-    result = generate.estimate_cost("invalid-model", 10)
+    """Cost estimation with an unpriced model returns an informative message."""
+    result = generate.estimate_cost("invalid/model", 10)
 
     assert result.startswith("Cost estimation not available for model")
 
 
-def test_run_llm_success(temp_dir: Path) -> None:
-    """Test successful LLM execution."""
+def test_estimate_cost_uses_live_pricing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """estimate_cost must consult openrouter.get_pricing (live catalogue)."""
+    seen: list[str] = []
+
+    def fake_get_pricing(model: str) -> dict[str, float]:
+        seen.append(model)
+        return {"input": 0.000001, "output": 0.000002}
+
+    monkeypatch.setattr(openrouter, "get_pricing", fake_get_pricing)
+
+    result = generate.estimate_cost("any/model", 2, 1000, 500)
+
+    assert seen == ["any/model"]
+    # input: 1000 * 2 * 1e-6 = 0.002 ; output: 500 * 2 * 2e-6 = 0.002
+    assert "$0.004" in result
+    assert "$0.002 input" in result
+    assert "$0.002 output" in result
+
+
+def test_run_llm_success(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_run_llm returns the caption and the request's actual cost."""
     attachment = temp_dir / "test.jpg"
     attachment.write_bytes(b"fake image")
     prompt = "Generate alt text for this image"
-    model = "gemini-2.5-flash"
-    timeout = 60
+    model = "google/gemini-2.5-flash"
 
-    mock_result = Mock()
-    mock_result.returncode = 0
-    mock_result.stdout = "Generated alt text"
-    mock_result.stderr = ""
+    captured: dict[str, object] = {}
 
-    with (
-        patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/llm"),
-        patch("subprocess.run", return_value=mock_result) as mock_run,
-    ):
-        result = generate._run_llm(attachment, prompt, model, timeout)
+    def fake_generate_caption(att, p, m, t):
+        captured.update(attachment=att, prompt=p, model=m, timeout=t)
+        return "Generated alt text", {"cost": 0.00042}
 
-        assert result == "Generated alt text"
-        mock_run.assert_called_once()
-        call_args = mock_run.call_args[0][0]
-        assert call_args[0] == "/usr/bin/llm"
-        assert "-m" in call_args
-        assert model in call_args
-        assert "-a" in call_args
-        assert str(attachment) in call_args
-        assert prompt in call_args
+    monkeypatch.setattr(openrouter, "generate_caption", fake_generate_caption)
+
+    caption, cost = generate._run_llm(attachment, prompt, model, 60)
+
+    assert caption == "Generated alt text"
+    assert cost == 0.00042
+    assert captured == {
+        "attachment": attachment,
+        "prompt": prompt,
+        "model": model,
+        "timeout": 60,
+    }
+
+
+def test_run_llm_missing_cost_returns_none(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When OpenRouter omits a cost, _run_llm reports None."""
+    attachment = temp_dir / "test.jpg"
+    attachment.write_bytes(b"fake image")
+
+    monkeypatch.setattr(
+        openrouter,
+        "generate_caption",
+        lambda *a, **k: ("caption", {"prompt_tokens": 10}),
+    )
+
+    caption, cost = generate._run_llm(attachment, "p", "m", 60)
+    assert caption == "caption"
+    assert cost is None
+
+
+def test_run_llm_propagates_openrouter_error(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Errors from OpenRouter surface as AltGenerationError subclasses."""
+    attachment = temp_dir / "test.jpg"
+    attachment.write_bytes(b"fake image")
+
+    def boom(*a, **k):
+        raise openrouter.OpenRouterError("Unknown model: bogus")
+
+    monkeypatch.setattr(openrouter, "generate_caption", boom)
+
+    with pytest.raises(utils.AltGenerationError, match="Unknown model"):
+        generate._run_llm(attachment, "p", "bogus", 60)
 
 
 def test_filter_existing_captions_filters_items(
@@ -145,32 +213,6 @@ def test_filter_existing_captions_filters_items(
     console_mock.print.assert_called_once()
 
 
-@pytest.mark.parametrize(
-    "returncode,stdout,stderr,expected_match",
-    [
-        pytest.param(1, "", "LLM error", "Caption generation failed", id="failure"),
-        pytest.param(0, "   ", "", "LLM returned empty caption", id="empty_output"),
-    ],
-)
-def test_run_llm_error_cases(
-    temp_dir: Path, returncode: int, stdout: str, stderr: str, expected_match: str,
-) -> None:
-    """Test LLM execution failure and empty output."""
-    attachment = temp_dir / "test.jpg"
-    attachment.write_bytes(b"fake image")
-    mock_result = Mock()
-    mock_result.returncode = returncode
-    mock_result.stdout = stdout
-    mock_result.stderr = stderr
-
-    with (
-        patch("alt_text_llm.utils.find_executable", return_value="/usr/bin/llm"),
-        patch("subprocess.run", return_value=mock_result),
-        pytest.raises(utils.AltGenerationError, match=expected_match),
-    ):
-        generate._run_llm(attachment, "Generate alt text", "gemini-2.5-flash", 60)
-
-
 @pytest.mark.asyncio
 async def test_async_generate_suggestions(
     monkeypatch: pytest.MonkeyPatch, temp_dir: Path
@@ -206,8 +248,8 @@ async def test_async_generate_suggestions(
 
     def fake_run_llm(
         attachment: Path, prompt: str, model: str, timeout: int
-    ) -> str:
-        return f"{attachment.name}-caption"
+    ) -> tuple[str, float | None]:
+        return f"{attachment.name}-caption", 0.001
 
     monkeypatch.setattr(generate, "_run_llm", fake_run_llm)
 
@@ -246,6 +288,55 @@ async def test_async_generate_suggestions(
     }
     actual_suggestions = {result.suggested_alt for result in results}
     assert actual_suggestions == expected_suggestions
+
+
+@pytest.mark.asyncio
+async def test_async_generate_reports_total_cost(
+    monkeypatch: pytest.MonkeyPatch, temp_dir: Path
+) -> None:
+    """The summed per-request cost is printed after generation."""
+    queue_items = [
+        scan.QueueItem(
+            markdown_file="t.md",
+            asset_path=f"image{i}.jpg",
+            line_number=i + 1,
+            context_snippet="ctx",
+        )
+        for i in range(3)
+    ]
+
+    def fake_download(qi, workspace):
+        target = workspace / "asset.jpg"
+        target.write_bytes(b"data")
+        return target
+
+    monkeypatch.setattr(utils, "download_asset", fake_download)
+    monkeypatch.setattr(
+        utils, "generate_article_context", lambda qi, **k: "ctx"
+    )
+    # Two items report a cost; one reports None and must be ignored.
+    costs = iter([0.001, None, 0.0025])
+    monkeypatch.setattr(
+        generate, "_run_llm", lambda *a, **k: ("caption", next(costs))
+    )
+
+    printed: list[str] = []
+    console = Mock()
+    console.print = lambda msg: printed.append(str(msg))
+    monkeypatch.setattr(generate, "Console", lambda: console)
+
+    options = generate.GenerateAltTextOptions(
+        root=temp_dir,
+        model="m",
+        max_chars=50,
+        timeout=10,
+        output_path=temp_dir / "out.json",
+    )
+    results = await generate.async_generate_suggestions(queue_items, options)
+
+    assert len(results) == 3
+    # 0.001 + 0.0025 = 0.0035 -> "$0.0035"
+    assert any("Actual cost: $0.0035" in line for line in printed)
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +381,7 @@ async def test_async_generate_with_individual_errors(
         return target
 
     def fake_run_llm(attachment, prompt, model, timeout):
-        return "caption"
+        return "caption", None
 
     def fake_context(qi, **kwargs):
         return qi.context_snippet
@@ -308,3 +399,163 @@ async def test_async_generate_with_individual_errors(
     )
     results = await generate.async_generate_suggestions(queue_items, options)
     assert len(results) == 4  # 4 out of 5 should succeed
+
+
+@pytest.mark.asyncio
+async def test_async_generate_bounds_concurrent_temp_dirs(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At most _CONCURRENCY_LIMIT temp dirs should exist simultaneously."""
+    item_count = generate._CONCURRENCY_LIMIT * 3
+    queue_items = [
+        scan.QueueItem(
+            markdown_file="test.md",
+            asset_path=f"image{i}.jpg",
+            line_number=i + 1,
+            context_snippet=f"ctx{i}",
+        )
+        for i in range(item_count)
+    ]
+
+    live = 0
+    peak = 0
+    real_mkdtemp = tempfile.mkdtemp
+
+    def counting_mkdtemp(*args, **kwargs):
+        nonlocal live, peak
+        live += 1
+        peak = max(peak, live)
+        return real_mkdtemp(*args, **kwargs)
+
+    real_rmtree = generate.shutil.rmtree
+
+    def counting_rmtree(path, *args, **kwargs):
+        nonlocal live
+        live -= 1
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", counting_mkdtemp)
+    monkeypatch.setattr(generate.shutil, "rmtree", counting_rmtree)
+
+    def fake_download_asset(qi: scan.QueueItem, workspace: Path) -> Path:
+        target = workspace / "asset.jpg"
+        target.write_bytes(b"data")
+        return target
+
+    async def fake_run_llm(attachment, prompt, model, timeout):
+        # Yield control so many coroutines interleave inside the semaphore.
+        await asyncio.sleep(0.01)
+        return "caption"
+
+    def sync_run_llm(attachment, prompt, model, timeout):
+        # _run_llm is invoked via asyncio.to_thread; emulate a brief delay.
+        import time
+
+        time.sleep(0.01)
+        return "caption", None
+
+    monkeypatch.setattr(utils, "download_asset", fake_download_asset)
+    monkeypatch.setattr(generate, "_run_llm", sync_run_llm)
+    monkeypatch.setattr(utils, "build_prompt", lambda qi, mc: qi.context_snippet)
+
+    options = generate.GenerateAltTextOptions(
+        root=temp_dir,
+        model="test",
+        max_chars=100,
+        timeout=10,
+        output_path=temp_dir / "out.json",
+    )
+
+    results = await generate.async_generate_suggestions(queue_items, options)
+    assert len(results) == item_count
+    assert peak <= generate._CONCURRENCY_LIMIT
+    assert live == 0  # every workspace was cleaned up
+
+
+@pytest.mark.asyncio
+async def test_async_generate_preserves_input_order(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Results are returned in input order despite varying completion times."""
+    item_count = 8
+    queue_items = [
+        scan.QueueItem(
+            markdown_file="test.md",
+            asset_path=f"image{i}.jpg",
+            line_number=i + 1,
+            context_snippet=f"ctx{i}",
+        )
+        for i in range(item_count)
+    ]
+
+    def fake_download_asset(qi: scan.QueueItem, workspace: Path) -> Path:
+        target = workspace / Path(qi.asset_path).name
+        target.write_bytes(b"data")
+        return target
+
+    def fake_run_llm(attachment, prompt, model, timeout):
+        # Sleep inversely to index so later items finish first.
+        import time
+
+        index = int(attachment.stem.replace("image", ""))
+        time.sleep((item_count - index) * 0.005)
+        return f"{attachment.name}-caption", None
+
+    monkeypatch.setattr(utils, "download_asset", fake_download_asset)
+    monkeypatch.setattr(generate, "_run_llm", fake_run_llm)
+    monkeypatch.setattr(utils, "build_prompt", lambda qi, mc: qi.context_snippet)
+
+    options = generate.GenerateAltTextOptions(
+        root=temp_dir,
+        model="test",
+        max_chars=100,
+        timeout=10,
+        output_path=temp_dir / "out.json",
+    )
+
+    results = await generate.async_generate_suggestions(queue_items, options)
+    assert [r.asset_path for r in results] == [
+        qi.asset_path for qi in queue_items
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_generate_survives_timeout(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One timing-out item is skipped; other items still succeed."""
+    queue_items = [
+        scan.QueueItem(
+            markdown_file="test.md",
+            asset_path=f"image{i}.jpg",
+            line_number=i + 1,
+            context_snippet=f"ctx{i}",
+        )
+        for i in range(3)
+    ]
+
+    def fake_download_asset(qi: scan.QueueItem, workspace: Path) -> Path:
+        target = workspace / Path(qi.asset_path).name
+        target.write_bytes(b"data")
+        return target
+
+    def fake_run_llm(attachment, prompt, model, timeout):
+        if attachment.name == "image1.jpg":
+            raise utils.AltGenerationError("LLM timed out after 5s")
+        return f"{attachment.name}-caption", None
+
+    monkeypatch.setattr(utils, "download_asset", fake_download_asset)
+    monkeypatch.setattr(generate, "_run_llm", fake_run_llm)
+    monkeypatch.setattr(utils, "build_prompt", lambda qi, mc: qi.context_snippet)
+
+    options = generate.GenerateAltTextOptions(
+        root=temp_dir,
+        model="test",
+        max_chars=100,
+        timeout=5,
+        output_path=temp_dir / "out.json",
+    )
+
+    results = await generate.async_generate_suggestions(queue_items, options)
+    asset_paths = [r.asset_path for r in results]
+    assert asset_paths == ["image0.jpg", "image2.jpg"]

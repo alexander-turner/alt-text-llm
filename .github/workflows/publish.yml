@@ -1,40 +1,32 @@
-name: Publish to PyPI
+name: Auto Version Bump and Publish
 
 on:
   push:
     branches:
       - main
 
+concurrency:
+  group: version-and-publish
+  cancel-in-progress: false
+
 permissions:
   contents: read
   id-token: write # Required for trusted publishing
 
 jobs:
+  # Reuse the standalone Tests workflow so the matrix is defined once and lives
+  # in its own requireable check. Publishing stays gated on it via `needs`.
   test:
-    name: Run tests
-    runs-on: ubuntu-latest
+    name: Tests
+    uses: ./.github/workflows/test.yml
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Run tests
-        run: pytest -o "addopts="
-
-  publish:
-    name: Publish to PyPI
+  version-and-publish:
+    name: Auto-bump version and publish to PyPI
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Push the version-bump commit, tag, and Release
+      id-token: write # Required for trusted publishing
     environment:
       name: pypi
       url: https://pypi.org/p/alt-text-llm
@@ -42,22 +34,63 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Full history + tags so version_bump.sh can analyze the commit range
+          # since the last release tag.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: pyproject.toml
 
       - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip
           pip install build
 
+      - name: Compute next version from Conventional Commits
+        id: bump
+        run: bash scripts/version_bump.sh
+
       - name: Build package
+        if: steps.bump.outputs.should_publish == 'true'
         run: python -m build
 
       - name: Publish to PyPI
+        if: steps.bump.outputs.should_publish == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           # No API token needed - uses OIDC trusted publishing
           verbose: true
+          # Treat an already-present version as success rather than a 400, so a
+          # release race (two pushes in quick succession) can't hard-fail the
+          # run. The version computation already avoids this; this is a backstop.
+          skip-existing: true
+
+      - name: Commit version bump, tag, and create GitHub Release
+        if: steps.bump.outputs.should_publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Commit the bumped __version__ back to main. [skip ci] keeps this
+          # push from spawning another publish run. Non-fatal: the release is
+          # already on PyPI, and PyPI is the source of truth for the next bump,
+          # so a protected branch that rejects the push doesn't fail the release.
+          git add alt_text_llm/__init__.py
+          git commit -m "chore: release v${VERSION} [skip ci]"
+          if ! git push origin HEAD:main; then
+            echo "::warning::Could not push the version-bump commit to main; release was published regardless."
+          fi
+          # The Release also creates the v<version> tag, which the next run uses
+          # to scope its commit-range analysis.
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --generate-notes \
+            --target "${GITHUB_SHA}"

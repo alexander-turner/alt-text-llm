@@ -1181,6 +1181,175 @@ def test_apply_with_many_captions(temp_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Bracket escaping (fix 1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "input_text,expected",
+    [
+        ("Box labeled [A]", r"Box labeled \[A\]"),
+        ("a [b] c [d]", r"a \[b\] c \[d\]"),
+        (r"Cost $5 in box [A]", r"Cost \$5 in box \[A\]"),
+        (r"Mix \ and [x]", r"Mix \\ and \[x\]"),
+    ],
+)
+def test_escape_markdown_alt_text_brackets(input_text: str, expected: str) -> None:
+    """Square brackets must be escaped so they don't break image syntax."""
+    assert apply._escape_markdown_alt_text(input_text) == expected
+
+
+def test_markdown_image_alt_brackets_roundtrip() -> None:
+    """A caption containing brackets must not corrupt the markdown image."""
+    line = "See ![](diagram.png) here"
+    new_line, _ = apply._apply_markdown_image_alt(line, "diagram.png", "Box labeled [A]")
+    assert new_line == r"See ![Box labeled \[A\]](diagram.png) here"
+
+    # The image path must still be parseable: the alt text region (between the
+    # first '![' and the matching ']') must not contain a bare ']'.
+    alt_region = new_line.split("![", 1)[1].split("](", 1)[0]
+    assert "]" not in alt_region.replace("\\]", "")
+
+
+def test_wikilink_image_alt_brackets_roundtrip() -> None:
+    """A wikilink caption containing brackets must be escaped."""
+    line = "See ![[diagram.png]] here"
+    new_line, _ = apply._apply_wikilink_image_alt(
+        line, "diagram.png", "Box labeled [A]"
+    )
+    assert new_line == r"See ![[diagram.png|Box labeled \[A\]]] here"
+
+
+# ---------------------------------------------------------------------------
+# Markdown image titles (fix 3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "line,expected_old_alt,expected_new_line",
+    [
+        pytest.param(
+            '![](img.png "My Title")',
+            None,
+            '![alt](img.png "My Title")',
+            id="empty_alt_with_title",
+        ),
+        pytest.param(
+            '![old](img.png "My Title" )',
+            "old",
+            '![alt](img.png "My Title")',
+            id="existing_alt_with_title_trailing_space",
+        ),
+        pytest.param(
+            '![old](img.png "Title with spaces and, punctuation!")',
+            "old",
+            '![alt](img.png "Title with spaces and, punctuation!")',
+            id="title_with_punctuation",
+        ),
+    ],
+)
+def test_apply_markdown_image_alt_preserves_title(
+    line: str, expected_old_alt: str | None, expected_new_line: str
+) -> None:
+    """Markdown image titles must be matched and preserved on rewrite."""
+    new_line, old_alt = apply._apply_markdown_image_alt(line, "img.png", "alt")
+    assert old_alt == expected_old_alt
+    assert new_line == expected_new_line
+
+
+# ---------------------------------------------------------------------------
+# Replace all images on a line (fix 4)
+# ---------------------------------------------------------------------------
+
+
+def test_markdown_replaces_all_on_one_line() -> None:
+    """Two identical-path images on one line should both get alt text."""
+    line = "![](a.png) ![](a.png)"
+    new_line, old_alt = apply._apply_markdown_image_alt(line, "a.png", "cap")
+    assert new_line == "![cap](a.png) ![cap](a.png)"
+    assert old_alt is None
+
+
+def test_markdown_replaces_all_on_one_line_with_titles() -> None:
+    """Titles are preserved per-occurrence when replacing all on a line."""
+    line = '![](a.png "T1") ![](a.png "T2")'
+    new_line, _ = apply._apply_markdown_image_alt(line, "a.png", "cap")
+    assert new_line == '![cap](a.png "T1") ![cap](a.png "T2")'
+
+
+def test_wikilink_replaces_all_on_one_line() -> None:
+    """Two identical-path wikilink images on one line should both get alt text."""
+    line = "![[a.png]] ![[a.png]]"
+    new_line, _ = apply._apply_wikilink_image_alt(line, "a.png", "cap")
+    assert new_line == "![[a.png|cap]] ![[a.png|cap]]"
+
+
+def test_apply_caption_replaces_all_on_one_line_end_to_end(
+    temp_dir: Path, console: Console
+) -> None:
+    """End-to-end: both images on a single line are captioned."""
+    md_path = temp_dir / "test.md"
+    md_path.write_text("![](a.png) ![](a.png)\n", encoding="utf-8")
+    caption_item = utils.AltGenerationResult(
+        markdown_file=str(md_path),
+        asset_path="a.png",
+        suggested_alt="s",
+        model="m",
+        context_snippet="c",
+        final_alt="cap",
+    )
+    result = apply._apply_caption_to_file(md_path, caption_item, console)
+    assert result is not None
+    assert md_path.read_text() == "![cap](a.png) ![cap](a.png)\n"
+
+
+# ---------------------------------------------------------------------------
+# Not-found warning (fix 2)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_caption_not_found_warns_and_leaves_file_unchanged(
+    temp_dir: Path, console_with_output: tuple
+) -> None:
+    """Missing asset triggers a 'Could not find asset' warning, no file change."""
+    console, output = console_with_output
+    md_path = temp_dir / "test.md"
+    original = "# No images here\n"
+    md_path.write_text(original, encoding="utf-8")
+    caption = utils.AltGenerationResult(
+        markdown_file=str(md_path),
+        asset_path="nonexistent.png",
+        suggested_alt="s",
+        model="m",
+        context_snippet="c",
+        final_alt="new alt",
+    )
+    result = apply._apply_caption_to_file(md_path, caption, console)
+    assert result is None
+    assert "Could not find asset" in output.getvalue()
+    assert md_path.read_text() == original
+
+
+def test_apply_caption_to_title_image_end_to_end(
+    temp_dir: Path, console: Console
+) -> None:
+    """End-to-end: a markdown image with a title gets captioned, title kept."""
+    md_path = temp_dir / "test.md"
+    md_path.write_text('![](img.png "My Title")\n', encoding="utf-8")
+    caption_item = utils.AltGenerationResult(
+        markdown_file=str(md_path),
+        asset_path="img.png",
+        suggested_alt="s",
+        model="m",
+        context_snippet="c",
+        final_alt="new alt",
+    )
+    result = apply._apply_caption_to_file(md_path, caption_item, console)
+    assert result is not None
+    assert md_path.read_text() == '![new alt](img.png "My Title")\n'
+
+
 def test_scan_then_apply_roundtrip(temp_dir: Path) -> None:
     """Scan a file, create captions, apply them, then rescan finds nothing."""
     md_path = temp_dir / "article.md"
