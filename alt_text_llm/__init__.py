@@ -1,6 +1,6 @@
 """AI-powered alt text generation and labeling tools."""
 
-__version__ = "1.6.0"
+__version__ = "1.6.3"
 
 from . import apply, generate, label, main, openrouter, scan, utils
 
