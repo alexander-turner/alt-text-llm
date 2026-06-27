@@ -123,25 +123,25 @@ def test_apply_markdown_image_alt(
         pytest.param(
             '<img alt="old alt" src="path/to/image.png">',
             "old alt",
-            '<img alt="new alt text" src="path/to/image.png"/>',
+            '<img alt="new alt text" src="path/to/image.png">',
             id="existing_alt",
         ),
         pytest.param(
             '<img src="path/to/image.png">',
             None,
-            '<img alt="new alt text" src="path/to/image.png"/>',
+            '<img src="path/to/image.png" alt="new alt text">',
             id="no_alt",
         ),
         pytest.param(
             '<img alt="old alt" src="path/to/image.png" class="theme-emoji"/>',
             "old alt",
-            '<img alt="new alt text" class="theme-emoji" src="path/to/image.png"/>',
+            '<img alt="new alt text" src="path/to/image.png" class="theme-emoji"/>',
             id="self_closing",
         ),
         pytest.param(
             '<img src="path/to/image.png" class="icon"/>',
             None,
-            '<img alt="new alt text" class="icon" src="path/to/image.png"/>',
+            '<img src="path/to/image.png" class="icon" alt="new alt text"/>',
             id="self_closing_no_alt",
         ),
     ],
@@ -489,7 +489,7 @@ def test_html_image_alt_with_special_chars(
         expected_escaped in new_line
         or expected_escaped.replace("&quot;", '"') in new_line
     )
-    assert new_line.endswith("/>")
+    assert new_line.endswith(">")
 
 
 @pytest.mark.parametrize(
@@ -912,6 +912,67 @@ Wikilink: ![[image.png|old wikilink alt]]
     assert "old wikilink alt" not in new_content
 
 
+def test_apply_caption_to_multiline_video(temp_dir: Path, console: Console) -> None:
+    """A <video> whose <source> children sit on later lines is matched.
+
+    Per-line matching could not see the asset (the src lives on a different
+    line than the <video> tag); the whole-file HTML pass handles it.
+    """
+    md_path = temp_dir / "test.md"
+    content = (
+        '<video aria-label="old" controls>\n'
+        '<source src="clip.mp4" type="video/mp4">\n'
+        '<source src="clip.webm" type="video/webm">\n'
+        "</video>\n"
+    )
+    md_path.write_text(content, encoding="utf-8")
+
+    caption_item = utils.AltGenerationResult(
+        markdown_file=str(md_path),
+        asset_path="clip.mp4",
+        suggested_alt="s",
+        model="m",
+        context_snippet="c",
+        final_alt="A faithful description",
+    )
+
+    result = apply._apply_caption_to_file(md_path, caption_item, console)
+
+    assert result == ("old", "A faithful description")
+    new_content = md_path.read_text(encoding="utf-8")
+    assert 'aria-label="A faithful description"' in new_content
+    # Source children and the closing tag are preserved on their own lines.
+    assert '<source src="clip.mp4" type="video/mp4">' in new_content
+    assert '<source src="clip.webm" type="video/webm">' in new_content
+    assert new_content.count("</video>") == 1
+
+
+def test_apply_caption_to_img_with_wrapped_opening_tag(
+    temp_dir: Path, console: Console
+) -> None:
+    """An <img> whose opening tag wraps across lines still gets alt text."""
+    md_path = temp_dir / "test.md"
+    content = '<img\n  src="photo.png"\n  class="hero">\n'
+    md_path.write_text(content, encoding="utf-8")
+
+    caption_item = utils.AltGenerationResult(
+        markdown_file=str(md_path),
+        asset_path="photo.png",
+        suggested_alt="s",
+        model="m",
+        context_snippet="c",
+        final_alt="A hero image",
+    )
+
+    result = apply._apply_caption_to_file(md_path, caption_item, console)
+
+    assert result is not None
+    new_content = md_path.read_text(encoding="utf-8")
+    assert 'alt="A hero image"' in new_content
+    # The wrapped opening tag keeps its internal newlines.
+    assert new_content.startswith('<img\n  src="photo.png"\n  class="hero"')
+
+
 """Tests for video label application functionality."""
 
 
@@ -1002,6 +1063,19 @@ class TestApplyHtmlVideoLabel:
         assert expected_fragment in new_line
         assert old_label == expected_old_label
 
+    def test_does_not_corrupt_prefix_attribute(self):
+        """Writing aria-label must not clobber a longer attr it prefixes.
+
+        Regression: ``aria-label`` used to match inside ``aria-labelledby`` and
+        rewrite to ``aria-label="..."ledby="cap-1"``, corrupting the tag.
+        """
+        line = '<video src="d.mp4" aria-labelledby="cap-1"></video>'
+        new_line, old_label = apply._apply_html_video_label(line, "d.mp4", "New label")
+        assert 'aria-labelledby="cap-1"' in new_line
+        assert 'aria-label="New label"' in new_line
+        # aria-labelledby is not in read_old_from, so there is no prior label.
+        assert old_label is None
+
     def test_no_match_returns_unchanged(self):
         """Should return unchanged line if video not found."""
         line = '<video src="other.mp4"></video>'
@@ -1033,6 +1107,27 @@ class TestApplyHtmlVideoLabel:
         assert 'aria-label="Demo video"' in new_line
         assert "Your browser does not support video." in new_line
 
+    def test_unclosed_video_fragment_is_not_repaired(self):
+        """A line holding only the opening of a multi-line <video> must stay intact.
+
+        Regression: re-serializing the line via BeautifulSoup used to close the
+        element early (``<source .../></video>``), corrupting the markup that
+        continues on later lines.
+        """
+        line = (
+            "<video aria-label='old label' autoplay=\"\" loop=\"\" muted=\"\" "
+            'playsinline=""><source src="a.mp4" type="video/mp4; codecs=hvc1">'
+        )
+        new_line, old_label = apply._apply_html_video_label(line, "a.mp4", "New label")
+
+        assert old_label == "old label"
+        assert 'aria-label="New label"' in new_line
+        # No premature close inserted, source child left untouched.
+        assert "</video>" not in new_line
+        assert '<source src="a.mp4" type="video/mp4; codecs=hvc1">' in new_line
+        # Surrounding attributes preserved verbatim.
+        assert 'autoplay="" loop="" muted="" playsinline=""' in new_line
+
 
 # ---------------------------------------------------------------------------
 # Edge cases and boundary conditions
@@ -1053,7 +1148,7 @@ class TestApplyHtmlVideoLabel:
             '<img src="image.png">',
             apply._apply_html_image_alt,
             "中文替代文字",
-            '<img alt="中文替代文字" src="image.png"/>',
+            '<img src="image.png" alt="中文替代文字">',
             id="html_unicode",
         ),
     ],

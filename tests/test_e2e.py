@@ -118,7 +118,7 @@ def test_full_roundtrip_markdown_image(tmp_path: Path, fake_llm_on_path: str):
     [
         (
             '<img src="photo.png">',
-            f'<img alt="{FAKE_LLM_CAPTION}" src="photo.png"/>',
+            f'<img src="photo.png" alt="{FAKE_LLM_CAPTION}">',
         ),
         (
             "![[photo.png]]",
