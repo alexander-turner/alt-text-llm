@@ -137,8 +137,11 @@ def _set_attribute_in_opening_tag(
     replacement = f'{write_attr}="{escaped}"'
 
     # Match an existing attribute with optional value (quoted, unquoted, or bare).
+    # The trailing lookahead pins the end of the attribute *name* so we don't
+    # match a prefix of a longer attribute (e.g. ``aria-label`` inside
+    # ``aria-labelledby``), which would corrupt the markup on rewrite.
     attr_pattern = re.compile(
-        rf"""(?<=[\s<])({re.escape(write_attr)})(\s*=\s*("[^"]*"|'[^']*'|[^\s>/]*))?""",
+        rf"""(?<=[\s<])({re.escape(write_attr)})(?=[\s=/>])(\s*=\s*("[^"]*"|'[^']*'|[^\s>/]*))?""",
         re.IGNORECASE,
     )
     new_tag, count = attr_pattern.subn(lambda _m: replacement, opening_tag, count=1)

@@ -1002,6 +1002,19 @@ class TestApplyHtmlVideoLabel:
         assert expected_fragment in new_line
         assert old_label == expected_old_label
 
+    def test_does_not_corrupt_prefix_attribute(self):
+        """Writing aria-label must not clobber a longer attr it prefixes.
+
+        Regression: ``aria-label`` used to match inside ``aria-labelledby`` and
+        rewrite to ``aria-label="..."ledby="cap-1"``, corrupting the tag.
+        """
+        line = '<video src="d.mp4" aria-labelledby="cap-1"></video>'
+        new_line, old_label = apply._apply_html_video_label(line, "d.mp4", "New label")
+        assert 'aria-labelledby="cap-1"' in new_line
+        assert 'aria-label="New label"' in new_line
+        # aria-labelledby is not in read_old_from, so there is no prior label.
+        assert old_label is None
+
     def test_no_match_returns_unchanged(self):
         """Should return unchanged line if video not found."""
         line = '<video src="other.mp4"></video>'
