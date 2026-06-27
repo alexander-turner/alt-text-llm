@@ -157,65 +157,76 @@ def _set_attribute_in_opening_tag(
 
 def _apply_html_tag_attribute(
     *,
-    line: str,
+    text: str,
     tag_name: str,
     asset_path: str,
     new_value: str,
     read_old_from: tuple[str, ...],
     write_attr: str,
 ) -> tuple[str, str | None]:
-    """Apply an attribute update to a specific HTML tag matched by src.
+    """Apply an attribute update to every matching HTML tag in ``text``.
+
+    ``text`` may be a single line or a whole file; the rewrite is a surgical,
+    in-place splice of each matched opening tag, so markup outside those opening
+    tags is preserved verbatim. This is what lets us handle elements that span
+    multiple lines (e.g. a ``<video>`` whose ``<source>`` children sit on later
+    lines, or an opening tag whose attributes wrap across lines) — cases the
+    parser sees correctly but a line-at-a-time rewrite cannot.
 
     Notes:
-        - Uses BeautifulSoup only to *locate* the matching tag and read its old
-          value; the rewrite is a surgical edit of the matched opening tag so the
-          rest of the line is preserved verbatim. Reserializing via ``str(soup)``
-          is unsafe here because a line may contain only a fragment of a
-          multi-line element (e.g. a ``<video>`` opening tag plus its first
-          ``<source>`` child), which BeautifulSoup would "repair" by closing the
-          element early and corrupting the markup.
-        - Matching is done by exact equality against the resolved src (for videos,
-          prefers @src and otherwise first <source src=...> child).
-        - BeautifulSoup can raise ParserRejectedMarkup on lines containing
+        - BeautifulSoup is used only to *locate* matching tags and read their old
+          values. We never reserialize via ``str(soup)``: on a whole file that
+          would rewrite the entire document as parsed HTML, and even on a
+          fragment it "repairs" unclosed elements and corrupts the markup.
+        - Matching is exact equality against the resolved src (for videos,
+          prefers @src and otherwise the first <source src=...> child).
+        - Multiple matches are spliced from last to first so earlier source
+          offsets stay valid as the text is mutated.
+        - BeautifulSoup can raise ParserRejectedMarkup on text containing
           non-HTML markup that confuses the parser (e.g. regex-like fragments in
-          JS/TS code blocks). In that case we treat the line as non-HTML and
-          leave it unchanged.
+          JS/TS code blocks). In that case we leave the text unchanged.
     """
     try:
-        soup = BeautifulSoup(line, "html.parser")
+        soup = BeautifulSoup(text, "html.parser")
     except bs4_exceptions.ParserRejectedMarkup:
-        print(f"{line=} created a bs4 parsing error! Ignoring.")
-        return line, None
+        print(f"{text=} created a bs4 parsing error! Ignoring.")
+        return text, None
 
+    # (start, end_exclusive, replacement) splices plus the first match's old value.
+    edits: list[tuple[int, int, str]] = []
+    first_old_value: str | None = None
     for el in soup.find_all(tag_name):
-        resolved_src = _extract_media_src(tag_name, el)
-        if resolved_src != asset_path:
+        if _extract_media_src(tag_name, el) != asset_path:
             continue
 
-        old_value_raw = next((el.get(a) for a in read_old_from if el.get(a)), None)
-        old_value = str(old_value_raw) if old_value_raw is not None else None
-
-        start = _sourcepos_to_index(line, el.sourceline, el.sourcepos)  # type: ignore[attr-defined]
-        end = _find_opening_tag_end(line, start) if start is not None else None
+        start = _sourcepos_to_index(text, el.sourceline, el.sourcepos)  # type: ignore[attr-defined]
+        end = _find_opening_tag_end(text, start) if start is not None else None
         if start is None or end is None:
-            # Fallback: reserialize (rare; only when source positions unavailable).
-            el[write_attr] = new_value
-            return str(soup), old_value
+            # Cannot locate the tag precisely; skip rather than risk corrupting
+            # the document. (Modern bs4 always reports source positions.)
+            continue
+
+        if not edits:
+            old_value_raw = next((el.get(a) for a in read_old_from if el.get(a)), None)
+            first_old_value = str(old_value_raw) if old_value_raw is not None else None
 
         new_opening = _set_attribute_in_opening_tag(
-            line[start : end + 1], write_attr, new_value
+            text[start : end + 1], write_attr, new_value
         )
-        return line[:start] + new_opening + line[end + 1 :], old_value
+        edits.append((start, end + 1, new_opening))
 
-    return line, None
+    for start, end, replacement in sorted(edits, reverse=True):
+        text = text[:start] + replacement + text[end:]
+
+    return text, first_old_value
 
 
 def _apply_html_image_alt(
-    line: str, asset_path: str, new_alt: str
+    text: str, asset_path: str, new_alt: str
 ) -> tuple[str, str | None]:
-    """Apply alt text to an HTML img tag."""
+    """Apply alt text to HTML img tags in ``text``."""
     return _apply_html_tag_attribute(
-        line=line,
+        text=text,
         tag_name="img",
         asset_path=asset_path,
         new_value=new_alt,
@@ -225,11 +236,11 @@ def _apply_html_image_alt(
 
 
 def _apply_html_video_label(
-    line: str, asset_path: str, new_label: str
+    text: str, asset_path: str, new_label: str
 ) -> tuple[str, str | None]:
-    """Apply accessibility label to an HTML video tag."""
+    """Apply accessibility label to HTML video tags in ``text``."""
     return _apply_html_tag_attribute(
-        line=line,
+        text=text,
         tag_name="video",
         asset_path=asset_path,
         new_value=new_label,
@@ -284,26 +295,35 @@ def _display_unused_entries(
         console.print(f"[dim]  {markdown_file}: {asset_basename}[/dim]")
 
 
-_FORMAT_APPLIERS = (
+def _normalize_alt(new_alt: str) -> str:
+    """Collapse runs of line breaks in alt text into a single ellipsis."""
+    return re.sub(r"(\r\n|\r|\n)+", " ... ", new_alt)
+
+
+# Line-oriented markdown syntaxes, applied one line at a time.
+_LINE_FORMAT_APPLIERS = (
     _apply_markdown_image_alt,
     _apply_wikilink_image_alt,
+)
+# Whole-text HTML appliers, run over the entire file so that elements spanning
+# multiple lines are matched correctly.
+_HTML_FORMAT_APPLIERS = (
     _apply_html_image_alt,
     _apply_html_video_label,
 )
+_FORMAT_APPLIERS = _LINE_FORMAT_APPLIERS + _HTML_FORMAT_APPLIERS
 
 
 def _try_all_image_formats(
     line: str, asset_path: str, new_alt: str
 ) -> tuple[str, str | None]:
     """
-    Try each supported format until one matches.
+    Try each supported format on a single line until one matches.
 
     Returns:
         Tuple of (modified line, old alt text or None)
     """
-    # Normalize alt text by replacing line breaks with ellipses
-    # Use + to collapse multiple consecutive line breaks into one ellipsis
-    normalized_alt = re.sub(r"(\r\n|\r|\n)+", " ... ", new_alt)
+    normalized_alt = _normalize_alt(new_alt)
 
     for apply_format in _FORMAT_APPLIERS:
         modified_line, old_alt = apply_format(line, asset_path, normalized_alt)
@@ -325,6 +345,12 @@ def _apply_caption_to_lines(
     Mutates ``lines`` in place. Does not perform any file I/O so that callers
     can batch multiple captions into a single read/write cycle.
 
+    Markdown and wikilink images are single-line syntaxes and are handled one
+    line at a time. HTML ``<img>``/``<video>`` elements are handled by parsing
+    the whole file, so tags whose attributes or ``<source>`` children span
+    multiple lines are still matched. HTML attribute splices never add or remove
+    newlines, so the line count is preserved.
+
     Args:
         lines: The file's lines (mutated in place when a match is found)
         caption_item: The AltGenerationResult with final_alt to apply
@@ -336,27 +362,44 @@ def _apply_caption_to_lines(
     """
     assert caption_item.final_alt is not None, "final_alt must be set"
 
-    modified_count = 0
-    last_old_alt: str | None = None
+    asset_path = caption_item.asset_path
+    normalized_alt = _normalize_alt(caption_item.final_alt)
 
-    # Search all lines for the asset and replace
-    for line_idx, original_line in enumerate(lines):
-        modified_line, old_alt = _try_all_image_formats(
-            original_line, caption_item.asset_path, caption_item.final_alt
-        )
+    changed = False
+    old_alt: str | None = None
 
-        if modified_line != original_line:
-            lines[line_idx] = modified_line
-            modified_count += 1
-            last_old_alt = old_alt
+    # 1) Per-line markdown + wikilink images.
+    for line_idx, line in enumerate(lines):
+        for apply_format in _LINE_FORMAT_APPLIERS:
+            modified_line, line_old_alt = apply_format(line, asset_path, normalized_alt)
+            if modified_line != line:
+                lines[line_idx] = modified_line
+                line = modified_line
+                changed = True
+                if old_alt is None:
+                    old_alt = line_old_alt
 
-    if modified_count == 0:
+    # 2) Whole-text HTML <img>/<video>.
+    original_text = "\n".join(lines)
+    text = original_text
+    for html_format in _HTML_FORMAT_APPLIERS:
+        modified_text, html_old_alt = html_format(text, asset_path, normalized_alt)
+        if modified_text != text:
+            text = modified_text
+            changed = True
+            if old_alt is None:
+                old_alt = html_old_alt
+    if text != original_text:
+        # Splices never change the number of lines (see docstring).
+        lines[:] = text.split("\n")
+
+    if not changed:
         console.print(
-            f"[yellow]Warning: Could not find asset '{caption_item.asset_path}' in {md_path}[/yellow]"
+            f"[yellow]Warning: Could not find asset '{asset_path}' in {md_path}[/yellow]"
         )
         return None
 
-    return (last_old_alt, caption_item.final_alt)
+    return (old_alt, caption_item.final_alt)
 
 
 def _apply_caption_to_file(

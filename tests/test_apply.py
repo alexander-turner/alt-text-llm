@@ -912,6 +912,67 @@ Wikilink: ![[image.png|old wikilink alt]]
     assert "old wikilink alt" not in new_content
 
 
+def test_apply_caption_to_multiline_video(temp_dir: Path, console: Console) -> None:
+    """A <video> whose <source> children sit on later lines is matched.
+
+    Per-line matching could not see the asset (the src lives on a different
+    line than the <video> tag); the whole-file HTML pass handles it.
+    """
+    md_path = temp_dir / "test.md"
+    content = (
+        '<video aria-label="old" controls>\n'
+        '<source src="clip.mp4" type="video/mp4">\n'
+        '<source src="clip.webm" type="video/webm">\n'
+        "</video>\n"
+    )
+    md_path.write_text(content, encoding="utf-8")
+
+    caption_item = utils.AltGenerationResult(
+        markdown_file=str(md_path),
+        asset_path="clip.mp4",
+        suggested_alt="s",
+        model="m",
+        context_snippet="c",
+        final_alt="A faithful description",
+    )
+
+    result = apply._apply_caption_to_file(md_path, caption_item, console)
+
+    assert result == ("old", "A faithful description")
+    new_content = md_path.read_text(encoding="utf-8")
+    assert 'aria-label="A faithful description"' in new_content
+    # Source children and the closing tag are preserved on their own lines.
+    assert '<source src="clip.mp4" type="video/mp4">' in new_content
+    assert '<source src="clip.webm" type="video/webm">' in new_content
+    assert new_content.count("</video>") == 1
+
+
+def test_apply_caption_to_img_with_wrapped_opening_tag(
+    temp_dir: Path, console: Console
+) -> None:
+    """An <img> whose opening tag wraps across lines still gets alt text."""
+    md_path = temp_dir / "test.md"
+    content = '<img\n  src="photo.png"\n  class="hero">\n'
+    md_path.write_text(content, encoding="utf-8")
+
+    caption_item = utils.AltGenerationResult(
+        markdown_file=str(md_path),
+        asset_path="photo.png",
+        suggested_alt="s",
+        model="m",
+        context_snippet="c",
+        final_alt="A hero image",
+    )
+
+    result = apply._apply_caption_to_file(md_path, caption_item, console)
+
+    assert result is not None
+    new_content = md_path.read_text(encoding="utf-8")
+    assert 'alt="A hero image"' in new_content
+    # The wrapped opening tag keeps its internal newlines.
+    assert new_content.startswith('<img\n  src="photo.png"\n  class="hero"')
+
+
 """Tests for video label application functionality."""
 
 
