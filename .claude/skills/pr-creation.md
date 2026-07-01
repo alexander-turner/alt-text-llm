@@ -10,6 +10,7 @@ Use this skill when:
 
 - Creating a pull request for completed work
 - The user asks to "create a PR", "open a pull request", or similar
+- A feature, fix, or refactor is complete and ready to ship — open the PR as the final step without waiting to be asked; completing the work is the explicit ask
 
 ## Prerequisites
 
@@ -113,8 +114,6 @@ gh pr create --title "<type>: <description>" --body "$(cat <<'EOF'
 
 ## Testing
 <How the changes were tested>
-
-https://claude.ai/code/session_...
 EOF
 )"
 ```
@@ -126,7 +125,7 @@ EOF
 - Focus the summary on the "why"
 - List concrete changes
 - Note any breaking changes
-- Include the Claude session URL at the end
+- Never include `claude.ai` URLs, session links, or AI-tool attribution links
 
 ### Step 6: Report Result
 
@@ -146,8 +145,6 @@ gh pr edit --body "$(cat <<'EOF'
 
 ## Testing
 <Updated testing information>
-
-https://claude.ai/code/session_...
 EOF
 )"
 ```
